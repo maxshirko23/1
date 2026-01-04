@@ -1,0 +1,7 @@
+{
+  "name": "The Modern Empathetic - Swiss Style Landing",
+  "description": "A minimalist, Swiss-designed landing page for a modern psychologist who acts more like a friend than a clinical doctor.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
