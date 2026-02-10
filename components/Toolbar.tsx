@@ -6,9 +6,11 @@ interface ToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   showSource: boolean;
+  showFileTree: boolean;
   zoom: number;
+  onOpenFolder: () => void;
   onOpenFile: () => void;
-  onSaveFile: () => void;
+  onSaveAll: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onDuplicate: () => void;
@@ -16,10 +18,12 @@ interface ToolbarProps {
   onMoveUp: () => void;
   onMoveDown: () => void;
   onToggleSource: () => void;
+  onToggleFileTree: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
   fileName: string;
+  hasProject: boolean;
 }
 
 const btnBase: React.CSSProperties = {
@@ -51,6 +55,13 @@ const btnActive: React.CSSProperties = {
   color: '#fff',
 };
 
+const btnSmall: React.CSSProperties = {
+  ...btnBase,
+  padding: '6px 8px',
+  fontSize: '12px',
+  color: '#8890a4',
+};
+
 const separator: React.CSSProperties = {
   width: '1px',
   height: '24px',
@@ -60,10 +71,10 @@ const separator: React.CSSProperties = {
 
 export function Toolbar(props: ToolbarProps) {
   const {
-    isFileLoaded, hasSelection, canUndo, canRedo, showSource, zoom,
-    onOpenFile, onSaveFile, onUndo, onRedo, onDuplicate, onDelete,
-    onMoveUp, onMoveDown, onToggleSource, onZoomIn, onZoomOut, onZoomReset,
-    fileName,
+    isFileLoaded, hasSelection, canUndo, canRedo, showSource, showFileTree, zoom,
+    onOpenFolder, onOpenFile, onSaveAll, onUndo, onRedo, onDuplicate, onDelete,
+    onMoveUp, onMoveDown, onToggleSource, onToggleFileTree, onZoomIn, onZoomOut, onZoomReset,
+    fileName, hasProject,
   } = props;
 
   return (
@@ -78,16 +89,31 @@ export function Toolbar(props: ToolbarProps) {
       minHeight: '44px',
     }}>
       {/* File operations */}
-      <button style={btnBase} onClick={onOpenFile} title="Open HTML file (Ctrl+O)">
+      <button style={btnBase} onClick={onOpenFolder} title="Open project folder (Ctrl+O)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-        Open
+        Open Folder
       </button>
-      <button style={isFileLoaded ? btnBase : btnDisabled} onClick={onSaveFile} title="Save HTML file (Ctrl+S)">
+      <button style={btnSmall} onClick={onOpenFile} title="Open single HTML file">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+        File
+      </button>
+      <button style={isFileLoaded ? btnBase : btnDisabled} onClick={onSaveAll} title="Save all files (Ctrl+S)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
         Save
       </button>
 
       <div style={separator} />
+
+      {/* File tree toggle */}
+      {hasProject && (
+        <>
+          <button style={showFileTree ? btnActive : btnBase} onClick={onToggleFileTree} title="Toggle file tree">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+            Files
+          </button>
+          <div style={separator} />
+        </>
+      )}
 
       {/* Undo/Redo */}
       <button style={canUndo ? btnBase : btnDisabled} onClick={onUndo} title="Undo (Ctrl+Z)">

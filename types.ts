@@ -31,6 +31,15 @@ export interface SelectedElementInfo {
   styles: ElementStyles;
 }
 
+export interface ProjectFile {
+  name: string;
+  path: string;
+  type: 'html' | 'css' | 'js' | 'image' | 'font' | 'other';
+  content: string;
+  blobUrl?: string;
+  file: File;
+}
+
 export type EditorTool = 'select' | 'move';
 
 export const STYLE_KEYS: (keyof ElementStyles)[] = [
