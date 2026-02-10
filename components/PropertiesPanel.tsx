@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { SelectedElementInfo, ElementStyles, STYLE_KEYS } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { SelectedElementInfo, ElementStyles } from '../types';
 
 interface PropertiesPanelProps {
   selectedInfo: SelectedElementInfo;
@@ -32,11 +32,6 @@ const inputStyle: React.CSSProperties = {
   outline: 'none',
 };
 
-const halfInput: React.CSSProperties = {
-  ...inputStyle,
-  width: 'calc(50% - 4px)',
-};
-
 const labelStyle: React.CSSProperties = {
   fontSize: '11px',
   color: '#8890a4',
@@ -55,6 +50,97 @@ const spacingLabels: Record<string, string> = {
   paddingLeft: 'L',
 };
 
+// === DeferredInput ===
+// Holds local state while focused. Commits only on blur or Enter.
+// This lets the user type intermediate values like "0.", "10p", etc.
+
+function DeferredInput({ value, onCommit, style, arrowStep, placeholder }: {
+  value: string;
+  onCommit: (val: string) => void;
+  style?: React.CSSProperties;
+  arrowStep?: boolean;
+  placeholder?: string;
+}) {
+  const [localVal, setLocalVal] = useState(value);
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Sync from prop when not focused
+  useEffect(() => {
+    if (!focused) setLocalVal(value);
+  }, [value, focused]);
+
+  const commit = () => {
+    if (localVal !== value) {
+      onCommit(localVal);
+    }
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      style={style || inputStyle}
+      value={focused ? localVal : value}
+      placeholder={placeholder}
+      onChange={e => setLocalVal(e.target.value)}
+      onFocus={() => {
+        setFocused(true);
+        setLocalVal(value);
+      }}
+      onBlur={() => {
+        commit();
+        setFocused(false);
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          commit();
+          inputRef.current?.blur();
+        }
+        if (arrowStep && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          e.preventDefault();
+          const src = focused ? localVal : value;
+          const current = parseFloat(src) || 0;
+          const delta = e.key === 'ArrowUp' ? 1 : -1;
+          const unit = src.replace(/[\d.\-+]/g, '') || 'px';
+          const next = `${current + delta}${unit}`;
+          setLocalVal(next);
+          onCommit(next);
+        }
+      }}
+    />
+  );
+}
+
+function DeferredTextarea({ value, onCommit, style, placeholder }: {
+  value: string;
+  onCommit: (val: string) => void;
+  style?: React.CSSProperties;
+  placeholder?: string;
+}) {
+  const [localVal, setLocalVal] = useState(value);
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setLocalVal(value);
+  }, [value, focused]);
+
+  return (
+    <textarea
+      style={style}
+      value={focused ? localVal : value}
+      placeholder={placeholder}
+      onChange={e => setLocalVal(e.target.value)}
+      onFocus={() => { setFocused(true); setLocalVal(value); }}
+      onBlur={() => {
+        if (localVal !== value) onCommit(localVal);
+        setFocused(false);
+      }}
+    />
+  );
+}
+
+// === SpacingGrid ===
+
 function SpacingGrid({ title, prefix, styles, onChange }: {
   title: string;
   prefix: 'margin' | 'padding';
@@ -72,19 +158,11 @@ function SpacingGrid({ title, prefix, styles, onChange }: {
             <span style={{ fontSize: '10px', color: '#6b7280', width: '12px', textAlign: 'center' }}>
               {spacingLabels[key]}
             </span>
-            <input
-              style={{ ...inputStyle, width: '100%' }}
+            <DeferredInput
               value={styles[key]}
-              onChange={e => onChange(key, e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  const current = parseInt(styles[key]) || 0;
-                  const delta = e.key === 'ArrowUp' ? 1 : -1;
-                  const unit = styles[key].replace(/[\d.-]/g, '') || 'px';
-                  onChange(key, `${current + delta}${unit}`);
-                }
-              }}
+              onCommit={val => onChange(key, val)}
+              style={{ ...inputStyle, width: '100%' }}
+              arrowStep
             />
           </div>
         ))}
@@ -92,6 +170,8 @@ function SpacingGrid({ title, prefix, styles, onChange }: {
     </div>
   );
 }
+
+// === PropertiesPanel ===
 
 export function PropertiesPanel(props: PropertiesPanelProps) {
   const { selectedInfo, onStyleChange, onClassChange, onIdChange, onTextChange, onEditInnerHTML } = props;
@@ -136,19 +216,19 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
 
         <div style={{ marginBottom: '6px' }}>
           <label style={labelStyle}>ID</label>
-          <input
-            style={inputStyle}
+          <DeferredInput
             value={selectedInfo.id}
-            onChange={e => onIdChange(e.target.value)}
+            onCommit={onIdChange}
+            style={inputStyle}
             placeholder="element-id"
           />
         </div>
         <div>
           <label style={labelStyle}>Class</label>
-          <input
-            style={inputStyle}
+          <DeferredInput
             value={selectedInfo.className}
-            onChange={e => onClassChange(e.target.value)}
+            onCommit={onClassChange}
+            style={inputStyle}
             placeholder="class names"
           />
         </div>
@@ -158,10 +238,10 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
       {!selectedInfo.hasChildren && (
         <div>
           <div style={sectionTitle}>Text Content</div>
-          <textarea
-            style={{ ...inputStyle, minHeight: '60px', resize: 'vertical' }}
+          <DeferredTextarea
             value={selectedInfo.textContent}
-            onChange={e => onTextChange(e.target.value)}
+            onCommit={onTextChange}
+            style={{ ...inputStyle, minHeight: '60px', resize: 'vertical' } as React.CSSProperties}
           />
         </div>
       )}
@@ -205,7 +285,7 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
         </div>
         {editingHtml && (
           <textarea
-            style={{ ...inputStyle, minHeight: '100px', resize: 'vertical', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
+            style={{ ...inputStyle, minHeight: '100px', resize: 'vertical', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' } as React.CSSProperties}
             value={htmlDraft}
             onChange={e => setHtmlDraft(e.target.value)}
           />
@@ -221,11 +301,11 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
       <div style={{ display: 'flex', gap: '8px' }}>
         <div style={{ flex: 1 }}>
           <label style={labelStyle}>Width</label>
-          <input style={inputStyle} value={selectedInfo.styles.width} onChange={e => onStyleChange('width', e.target.value)} />
+          <DeferredInput value={selectedInfo.styles.width} onCommit={v => onStyleChange('width', v)} style={inputStyle} arrowStep />
         </div>
         <div style={{ flex: 1 }}>
           <label style={labelStyle}>Height</label>
-          <input style={inputStyle} value={selectedInfo.styles.height} onChange={e => onStyleChange('height', e.target.value)} />
+          <DeferredInput value={selectedInfo.styles.height} onCommit={v => onStyleChange('height', v)} style={inputStyle} arrowStep />
         </div>
       </div>
 
@@ -234,19 +314,7 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
       <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
         <div style={{ flex: 1 }}>
           <label style={labelStyle}>Font Size</label>
-          <input
-            style={inputStyle}
-            value={selectedInfo.styles.fontSize}
-            onChange={e => onStyleChange('fontSize', e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                e.preventDefault();
-                const current = parseInt(selectedInfo.styles.fontSize) || 16;
-                const delta = e.key === 'ArrowUp' ? 1 : -1;
-                onStyleChange('fontSize', `${current + delta}px`);
-              }
-            }}
-          />
+          <DeferredInput value={selectedInfo.styles.fontSize} onCommit={v => onStyleChange('fontSize', v)} style={inputStyle} arrowStep />
         </div>
         <div style={{ flex: 1 }}>
           <label style={labelStyle}>Font Weight</label>
@@ -283,12 +351,7 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
         </div>
         <div style={{ flex: 1 }}>
           <label style={labelStyle}>Opacity</label>
-          <input
-            style={inputStyle}
-            value={selectedInfo.styles.opacity}
-            onChange={e => onStyleChange('opacity', e.target.value)}
-            type="text"
-          />
+          <DeferredInput value={selectedInfo.styles.opacity} onCommit={v => onStyleChange('opacity', v)} style={inputStyle} />
         </div>
       </div>
 
@@ -304,10 +367,10 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
               onChange={e => onStyleChange('backgroundColor', e.target.value)}
               style={{ width: '28px', height: '28px', border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
             />
-            <input
-              style={{ ...inputStyle, flex: 1 }}
+            <DeferredInput
               value={selectedInfo.styles.backgroundColor}
-              onChange={e => onStyleChange('backgroundColor', e.target.value)}
+              onCommit={v => onStyleChange('backgroundColor', v)}
+              style={{ ...inputStyle, flex: 1 }}
             />
           </div>
         </div>
@@ -322,10 +385,10 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
               onChange={e => onStyleChange('color', e.target.value)}
               style={{ width: '28px', height: '28px', border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
             />
-            <input
-              style={{ ...inputStyle, flex: 1 }}
+            <DeferredInput
               value={selectedInfo.styles.color}
-              onChange={e => onStyleChange('color', e.target.value)}
+              onCommit={v => onStyleChange('color', v)}
+              style={{ ...inputStyle, flex: 1 }}
             />
           </div>
         </div>
@@ -367,11 +430,7 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
       </div>
       <div>
         <label style={labelStyle}>Border Radius</label>
-        <input
-          style={inputStyle}
-          value={selectedInfo.styles.borderRadius}
-          onChange={e => onStyleChange('borderRadius', e.target.value)}
-        />
+        <DeferredInput value={selectedInfo.styles.borderRadius} onCommit={v => onStyleChange('borderRadius', v)} style={inputStyle} arrowStep />
       </div>
     </div>
   );

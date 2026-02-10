@@ -244,6 +244,7 @@ function App() {
   const [blobUrls, setBlobUrls] = useState<Record<string, string>>({});
   const [showFileTree, setShowFileTree] = useState(false);
   const [sourceTab, setSourceTab] = useState<string>('html');
+  const [saveStatus, setSaveStatus] = useState('');
 
   // --- Refs ---
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -257,6 +258,7 @@ function App() {
   const cssContentsRef = useRef<Record<string, string>>({});
   const projectFilesRef = useRef<ProjectFile[]>([]);
   const activeHtmlPathRef = useRef('');
+  const fileHandlesRef = useRef<Record<string, any>>({});
 
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { historyIdxRef.current = historyIdx; }, [historyIdx]);
@@ -502,7 +504,31 @@ function App() {
   // ===== FILE OPERATIONS =====
 
   // --- Open single file (no CSS support) ---
-  const openFile = useCallback(() => { fileInputRef.current?.click(); }, []);
+  const openFile = useCallback(async () => {
+    // Try File System Access API for write-back support
+    if ('showOpenFilePicker' in window) {
+      try {
+        const [handle] = await (window as any).showOpenFilePicker({
+          types: [{ description: 'HTML files', accept: { 'text/html': ['.html', '.htm'] } }],
+        });
+        const file: File = await handle.getFile();
+        fileHandlesRef.current = { [file.name]: handle };
+        setFileName(file.name);
+        setProjectFiles([]); setActiveHtmlPath(file.name);
+        activeHtmlPathRef.current = file.name;
+        setCssContents({}); setBlobUrls({});
+        setShowFileTree(false); setSourceTab('html');
+        const html = await file.text();
+        setHistory([]); setHistoryIdx(-1);
+        setSourceCode(html);
+        loadProcessedHtml(html, true);
+        return;
+      } catch (e: any) {
+        if (e.name === 'AbortError') return; // user cancelled
+      }
+    }
+    fileInputRef.current?.click();
+  }, [loadProcessedHtml]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -523,7 +549,19 @@ function App() {
   }, [loadProcessedHtml]);
 
   // --- Open folder (with CSS + image support) ---
-  const openFolder = useCallback(() => { folderInputRef.current?.click(); }, []);
+  const openFolder = useCallback(async () => {
+    // Try File System Access API for write-back support
+    if ('showDirectoryPicker' in window) {
+      try {
+        const dirHandle = await (window as any).showDirectoryPicker();
+        await openFolderFromHandle(dirHandle);
+        return;
+      } catch (e: any) {
+        if (e.name === 'AbortError') return; // user cancelled
+      }
+    }
+    folderInputRef.current?.click();
+  }, []);
 
   const handleFolderChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -584,7 +622,64 @@ function App() {
       loadProjectHtml(firstHtml.path, firstHtml.content, newCssContents, newBlobUrls);
     }
 
+    fileHandlesRef.current = {};
     e.target.value = '';
+  }, []);
+
+  // --- Open folder via File System Access API (gives write-back) ---
+  const openFolderFromHandle = useCallback(async (dirHandle: any) => {
+    Object.values(blobUrlsRef.current).forEach((url: string) => URL.revokeObjectURL(url));
+
+    const newFiles: ProjectFile[] = [];
+    const newBlobUrls: Record<string, string> = {};
+    const newCssContents: Record<string, string> = {};
+    const newHandles: Record<string, any> = {};
+
+    async function readDir(handle: any, basePath: string) {
+      for await (const entry of handle.values()) {
+        const entryPath = basePath ? `${basePath}/${entry.name}` : entry.name;
+        if (entry.kind === 'file') {
+          const file: File = await entry.getFile();
+          const ext = file.name.split('.').pop()?.toLowerCase() || '';
+          const type = classifyFileType(ext);
+          const pf: ProjectFile = { name: file.name, path: entryPath, type, content: '', file };
+
+          if (type === 'html' || type === 'css' || type === 'js') {
+            pf.content = await file.text();
+            if (type === 'css') newCssContents[entryPath] = pf.content;
+          } else if (type === 'image' || type === 'font') {
+            const blobUrl = URL.createObjectURL(file);
+            pf.blobUrl = blobUrl;
+            newBlobUrls[entryPath] = blobUrl;
+          }
+          newFiles.push(pf);
+          newHandles[entryPath] = entry;
+        } else if (entry.kind === 'directory') {
+          await readDir(entry, entryPath);
+        }
+      }
+    }
+
+    await readDir(dirHandle, '');
+
+    const typeOrder: Record<string, number> = { html: 0, css: 1, js: 2, image: 3, font: 4, other: 5 };
+    newFiles.sort((a, b) => (typeOrder[a.type] - typeOrder[b.type]) || a.path.localeCompare(b.path));
+
+    setProjectFiles(newFiles);
+    projectFilesRef.current = newFiles;
+    setBlobUrls(newBlobUrls);
+    blobUrlsRef.current = newBlobUrls;
+    setCssContents(newCssContents);
+    cssContentsRef.current = newCssContents;
+    setShowFileTree(true);
+    setSourceTab('html');
+    fileHandlesRef.current = newHandles;
+
+    const htmlFiles = newFiles.filter(f => f.type === 'html');
+    const firstHtml = htmlFiles.find(f => f.name === 'index.html') || htmlFiles[0];
+    if (firstHtml) {
+      loadProjectHtml(firstHtml.path, firstHtml.content, newCssContents, newBlobUrls);
+    }
   }, []);
 
   const loadProjectHtml = useCallback((htmlPath: string, rawHtml: string, css: Record<string, string>, blobs: Record<string, string>) => {
@@ -604,23 +699,53 @@ function App() {
     loadProjectHtml(htmlPath, file.content, cssContentsRef.current, blobUrlsRef.current);
   }, [loadProjectHtml]);
 
-  // --- Save ---
-  const saveAll = useCallback(() => {
+  // --- Save (overwrite original files if we have handles, else download) ---
+  const saveAll = useCallback(async () => {
     const doc = iframeRef.current?.contentDocument;
     if (!doc) return;
 
-    // Save HTML
+    const handles = fileHandlesRef.current;
+    const hasHandles = Object.keys(handles).length > 0;
+    const htmlPath = activeHtmlPathRef.current;
     const html = serializeDocument(doc);
-    const htmlName = activeHtmlPathRef.current ? activeHtmlPathRef.current.split('/').pop()! : (fileName || 'index.html');
-    downloadFile(html, htmlName, 'text/html');
+    let savedCount = 0;
 
-    // Save each modified CSS file
-    const cssPaths = Object.keys(cssContentsRef.current);
-    cssPaths.forEach((cssPath, i) => {
-      setTimeout(() => {
-        downloadFile(cssContentsRef.current[cssPath], cssPath.split('/').pop() || 'style.css', 'text/css');
-      }, (i + 1) * 300);
-    });
+    try {
+      // Save HTML
+      if (hasHandles && handles[htmlPath]) {
+        const writable = await handles[htmlPath].createWritable();
+        await writable.write(html);
+        await writable.close();
+        savedCount++;
+      } else {
+        downloadFile(html, htmlPath?.split('/').pop() || fileName || 'index.html', 'text/html');
+        savedCount++;
+      }
+
+      // Save each CSS file
+      for (const cssPath of Object.keys(cssContentsRef.current)) {
+        const content = cssContentsRef.current[cssPath];
+        if (hasHandles && handles[cssPath]) {
+          const writable = await handles[cssPath].createWritable();
+          await writable.write(content);
+          await writable.close();
+          savedCount++;
+        } else {
+          downloadFile(content, cssPath.split('/').pop() || 'style.css', 'text/css');
+          savedCount++;
+        }
+      }
+
+      if (hasHandles) {
+        setSaveStatus(`Saved ${savedCount} file${savedCount > 1 ? 's' : ''}`);
+      } else {
+        setSaveStatus(`Downloaded ${savedCount} file${savedCount > 1 ? 's' : ''}`);
+      }
+      setTimeout(() => setSaveStatus(''), 2500);
+    } catch (err: any) {
+      setSaveStatus(`Error: ${err.message || 'save failed'}`);
+      setTimeout(() => setSaveStatus(''), 4000);
+    }
   }, [fileName]);
 
   // --- Element operations ---
@@ -864,6 +989,19 @@ function App() {
               fontSize: '12px', fontWeight: 500, zIndex: 100, pointerEvents: 'none', boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
             }}>
               Hold Shift for free-move mode
+            </div>
+          )}
+
+          {/* Save status */}
+          {saveStatus && (
+            <div style={{
+              position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
+              background: saveStatus.startsWith('Error') ? '#ef4444' : '#22c55e',
+              color: '#fff', padding: '8px 20px', borderRadius: '20px',
+              fontSize: '13px', fontWeight: 500, zIndex: 100, pointerEvents: 'none',
+              boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+            }}>
+              {saveStatus}
             </div>
           )}
         </div>
