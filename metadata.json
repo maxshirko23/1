@@ -1,7 +1,4 @@
 {
-  "name": "The Modern Empathetic - Swiss Style Landing",
-  "description": "A minimalist, Swiss-designed landing page for a modern psychologist who acts more like a friend than a clinical doctor.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "name": "Gradient Mixer — Multi-Layer Effect Generator",
+  "description": "A generator for complex multi-layered gradients created by combining radial, linear, and conic gradients with blend modes, blur, and noise effects."
 }
