@@ -151,6 +151,8 @@ function getComputedStyles(el: HTMLElement): ElementStyles {
     textAlign: el.style.textAlign || cs.textAlign,
     borderRadius: el.style.borderRadius || cs.borderRadius,
     opacity: el.style.opacity || cs.opacity,
+    gridColumnStart: el.style.gridColumnStart || cs.gridColumnStart,
+    gridColumnEnd: el.style.gridColumnEnd || cs.gridColumnEnd,
   };
 }
 
@@ -332,6 +334,9 @@ function App() {
   const extractElementInfo = useCallback((el: HTMLElement): SelectedElementInfo => {
     const doc = iframeRef.current?.contentDocument;
     const root = doc?.body || el;
+    const parent = el.parentElement;
+    const parentCs = parent ? el.ownerDocument.defaultView!.getComputedStyle(parent) : null;
+    const isInGrid = parentCs ? (parentCs.display === 'grid' || parentCs.display === 'inline-grid') : false;
     return {
       tagName: el.tagName.toLowerCase(),
       path: getElementPath(el, root),
@@ -341,6 +346,7 @@ function App() {
       innerHTML: el.innerHTML,
       hasChildren: el.children.length > 0,
       styles: getComputedStyles(el),
+      isInGrid,
     };
   }, []);
 
@@ -1081,6 +1087,39 @@ function App() {
     el.innerHTML = html; pushHistory(); refreshSelectedInfo();
   }, [pushHistory, refreshSelectedInfo]);
 
+  // --- Tag change (for typography role switching) ---
+  const changeTag = useCallback((newTag: string) => {
+    const el = selectedElRef.current;
+    if (!el || !el.parentElement) return;
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    if (el.tagName.toLowerCase() === newTag.toLowerCase()) return;
+    const newEl = doc.createElement(newTag);
+    for (let i = 0; i < el.attributes.length; i++) {
+      const attr = el.attributes[i];
+      newEl.setAttribute(attr.name, attr.value);
+    }
+    while (el.firstChild) newEl.appendChild(el.firstChild);
+    el.parentElement.replaceChild(newEl, el);
+    // Update multi-select set
+    const multi = multiSelectedRef.current;
+    if (multi.has(el)) { multi.delete(el); multi.add(newEl); }
+    pushHistory();
+    selectElement(newEl);
+  }, [pushHistory, selectElement]);
+
+  // --- Enable grid on parent ---
+  const enableGridOnParent = useCallback(() => {
+    const el = selectedElRef.current;
+    if (!el || !el.parentElement) return;
+    const parent = el.parentElement;
+    parent.style.display = 'grid';
+    parent.style.gridTemplateColumns = 'repeat(4, 1fr)';
+    parent.style.gap = '16px';
+    pushHistory();
+    refreshSelectedInfo();
+  }, [pushHistory, refreshSelectedInfo]);
+
   // --- Source code sync ---
   const syncSourceFromIframe = useCallback(() => {
     const doc = iframeRef.current?.contentDocument;
@@ -1338,6 +1377,8 @@ function App() {
             onIdChange={updateId}
             onTextChange={updateText}
             onEditInnerHTML={editInnerHTML}
+            onTagChange={changeTag}
+            onEnableGrid={enableGridOnParent}
           />
         )}
       </div>

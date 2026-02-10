@@ -18,6 +18,8 @@ export interface ElementStyles {
   textAlign: string;
   borderRadius: string;
   opacity: string;
+  gridColumnStart: string;
+  gridColumnEnd: string;
 }
 
 export interface SelectedElementInfo {
@@ -29,6 +31,7 @@ export interface SelectedElementInfo {
   innerHTML: string;
   hasChildren: boolean;
   styles: ElementStyles;
+  isInGrid: boolean;
 }
 
 export interface ProjectFile {
@@ -47,4 +50,5 @@ export const STYLE_KEYS: (keyof ElementStyles)[] = [
   'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
   'width', 'height', 'backgroundColor', 'color', 'fontSize',
   'fontWeight', 'display', 'position', 'textAlign', 'borderRadius', 'opacity',
+  'gridColumnStart', 'gridColumnEnd',
 ];
