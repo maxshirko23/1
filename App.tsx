@@ -245,6 +245,7 @@ function App() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [sourceTab, setSourceTab] = useState<string>('html');
   const [saveStatus, setSaveStatus] = useState('');
+  const [viewportMode, setViewportMode] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
 
   // --- Refs ---
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -886,9 +887,17 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && e.key === 'o') { e.preventDefault(); openFolder(); }
-      else if (ctrl && e.key === 's') { e.preventDefault(); saveAll(); }
-      else if (ctrl && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      const target = e.target as HTMLElement;
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true';
+
+      // Always intercept open/save regardless of focus
+      if (ctrl && e.key === 'o') { e.preventDefault(); openFolder(); return; }
+      if (ctrl && e.key === 's') { e.preventDefault(); saveAll(); return; }
+
+      // Don't intercept undo/redo/delete when user is typing in an input or textarea
+      if (isTyping) return;
+
+      if (ctrl && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (ctrl && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
       else if (ctrl && e.key === 'y') { e.preventDefault(); redo(); }
       else if (ctrl && e.key === 'd') { e.preventDefault(); duplicateSelected(); }
@@ -946,6 +955,8 @@ function App() {
         onZoomReset={zoomReset}
         fileName={fileName}
         hasProject={projectFiles.length > 0}
+        viewportMode={viewportMode}
+        onViewportChange={setViewportMode}
       />
 
       {/* Main area */}
@@ -961,7 +972,7 @@ function App() {
         )}
 
         {/* Canvas */}
-        <div style={{ flex: 1, position: 'relative', overflow: 'auto', background: isLoaded ? '#e5e7eb' : '#13162b' }}>
+        <div style={{ flex: 1, position: 'relative', overflow: 'auto', background: isLoaded ? '#e5e7eb' : '#13162b', display: 'flex', flexDirection: 'column', alignItems: viewportMode !== 'desktop' ? 'center' : 'stretch' }}>
           {isLoaded && (
             <div style={{
               position: 'absolute', inset: 0,
@@ -970,17 +981,40 @@ function App() {
               opacity: 0.3, pointerEvents: 'none', zIndex: 0,
             }} />
           )}
-          <iframe
-            ref={iframeRef}
-            style={{
-              width: `${10000 / zoom}%`, height: `${10000 / zoom}%`,
-              border: 'none', transform: `scale(${zoom / 100})`, transformOrigin: 'top left',
-              position: 'relative', zIndex: 1, background: '#fff',
-              display: isLoaded ? 'block' : 'none',
-            }}
-            sandbox="allow-same-origin allow-scripts"
-            title="Editor Canvas"
-          />
+          {/* Viewport frame */}
+          {isLoaded && viewportMode !== 'desktop' && (
+            <div style={{
+              textAlign: 'center', padding: '8px 0 4px', fontSize: '11px', color: '#6b7280',
+              fontFamily: 'JetBrains Mono, monospace', position: 'relative', zIndex: 2,
+            }}>
+              {viewportMode === 'tablet' ? '768 × 1024' : '375 × 812'}
+            </div>
+          )}
+          <div style={{
+            width: viewportMode === 'desktop' ? '100%' : viewportMode === 'tablet' ? '768px' : '375px',
+            maxWidth: '100%',
+            flex: viewportMode === 'desktop' ? 1 : undefined,
+            height: viewportMode === 'desktop' ? '100%' : viewportMode === 'tablet' ? '1024px' : '812px',
+            position: 'relative',
+            boxShadow: viewportMode !== 'desktop' ? '0 4px 24px rgba(0,0,0,0.3)' : 'none',
+            borderRadius: viewportMode !== 'desktop' ? '8px' : '0',
+            overflow: 'hidden',
+            background: '#fff',
+            zIndex: 1,
+            margin: viewportMode !== 'desktop' ? '0 auto 16px' : '0',
+          }}>
+            <iframe
+              ref={iframeRef}
+              style={{
+                width: `${10000 / zoom}%`, height: `${10000 / zoom}%`,
+                border: 'none', transform: `scale(${zoom / 100})`, transformOrigin: 'top left',
+                position: 'relative', background: '#fff',
+                display: isLoaded ? 'block' : 'none',
+              }}
+              sandbox="allow-same-origin allow-scripts"
+              title="Editor Canvas"
+            />
+          </div>
           {!isLoaded && <WelcomeScreen onOpenFolder={openFolder} onOpenFile={openFile} />}
           {isDragging && (
             <div style={{

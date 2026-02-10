@@ -24,6 +24,8 @@ interface ToolbarProps {
   onZoomReset: () => void;
   fileName: string;
   hasProject: boolean;
+  viewportMode: 'desktop' | 'tablet' | 'mobile';
+  onViewportChange: (mode: 'desktop' | 'tablet' | 'mobile') => void;
 }
 
 const btnBase: React.CSSProperties = {
@@ -74,7 +76,7 @@ export function Toolbar(props: ToolbarProps) {
     isFileLoaded, hasSelection, canUndo, canRedo, showSource, showFileTree, zoom,
     onOpenFolder, onOpenFile, onSaveAll, onUndo, onRedo, onDuplicate, onDelete,
     onMoveUp, onMoveDown, onToggleSource, onToggleFileTree, onZoomIn, onZoomOut, onZoomReset,
-    fileName, hasProject,
+    fileName, hasProject, viewportMode, onViewportChange,
   } = props;
 
   return (
@@ -161,6 +163,34 @@ export function Toolbar(props: ToolbarProps) {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/></svg>
         Source
       </button>
+
+      {isFileLoaded && (
+        <>
+          <div style={separator} />
+          {/* Viewport switcher */}
+          <button
+            style={viewportMode === 'desktop' ? btnActive : btnBase}
+            onClick={() => onViewportChange('desktop')}
+            title="Desktop view"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </button>
+          <button
+            style={viewportMode === 'tablet' ? btnActive : btnBase}
+            onClick={() => onViewportChange('tablet')}
+            title="Tablet view (768×1024)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+          </button>
+          <button
+            style={viewportMode === 'mobile' ? btnActive : btnBase}
+            onClick={() => onViewportChange('mobile')}
+            title="Mobile view (375×812)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+          </button>
+        </>
+      )}
 
       {/* File name */}
       <div style={{ flex: 1 }} />
