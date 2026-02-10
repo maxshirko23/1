@@ -156,8 +156,10 @@ function getComputedStyles(el: HTMLElement): ElementStyles {
 
 function serializeDocument(doc: Document): string {
   const clone = doc.documentElement.cloneNode(true) as HTMLElement;
-  // Remove editor injected style
+  // Remove editor injected elements
   clone.querySelector('#__editor_styles__')?.remove();
+  clone.querySelectorAll('.__editor_drop_indicator__').forEach(e => e.remove());
+  clone.querySelectorAll('.__editor_drag_label__').forEach(e => e.remove());
   // Restore <link> from <style data-editor-href>
   clone.querySelectorAll('style[data-editor-href]').forEach(style => {
     const href = style.getAttribute('data-editor-href')!;
@@ -260,6 +262,8 @@ function App() {
   const projectFilesRef = useRef<ProjectFile[]>([]);
   const activeHtmlPathRef = useRef('');
   const fileHandlesRef = useRef<Record<string, any>>({});
+  const multiSelectedRef = useRef<Set<HTMLElement>>(new Set());
+  const [selectionCount, setSelectionCount] = useState(0);
 
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { historyIdxRef.current = historyIdx; }, [historyIdx]);
@@ -340,28 +344,80 @@ function App() {
     };
   }, []);
 
-  const selectElement = useCallback((el: HTMLElement | null) => {
+  const selectElement = useCallback((el: HTMLElement | null, addToSelection = false) => {
     const doc = iframeRef.current?.contentDocument;
     if (!doc) return;
-    doc.querySelectorAll('[data-editor-selected]').forEach(e => {
-      e.removeAttribute('data-editor-selected');
-      e.classList.remove('__editor_selected__');
-    });
-    selectedElRef.current = null;
-    if (!el || !isEditable(el)) { setSelectedInfo(null); return; }
-    el.setAttribute('data-editor-selected', 'true');
-    el.classList.add('__editor_selected__');
-    selectedElRef.current = el;
-    setSelectedInfo(extractElementInfo(el));
+    const multi = multiSelectedRef.current;
+
+    if (!el || !isEditable(el)) {
+      // Clear all
+      multi.forEach(e => { e.removeAttribute('data-editor-selected'); e.classList.remove('__editor_selected__'); });
+      multi.clear();
+      selectedElRef.current = null;
+      setSelectedInfo(null);
+      setSelectionCount(0);
+      return;
+    }
+
+    if (addToSelection) {
+      if (multi.has(el)) {
+        // Toggle off
+        multi.delete(el);
+        el.removeAttribute('data-editor-selected');
+        el.classList.remove('__editor_selected__');
+        if (selectedElRef.current === el) {
+          const remaining: HTMLElement[] = Array.from(multi);
+          if (remaining.length > 0) {
+            selectedElRef.current = remaining[remaining.length - 1];
+            setSelectedInfo(extractElementInfo(selectedElRef.current));
+          } else {
+            selectedElRef.current = null;
+            setSelectedInfo(null);
+          }
+        }
+      } else {
+        // Add to selection
+        el.setAttribute('data-editor-selected', 'true');
+        el.classList.add('__editor_selected__');
+        multi.add(el);
+        selectedElRef.current = el;
+        setSelectedInfo(extractElementInfo(el));
+      }
+    } else {
+      // Single select — clear others first
+      multi.forEach(e => { e.removeAttribute('data-editor-selected'); e.classList.remove('__editor_selected__'); });
+      multi.clear();
+      el.setAttribute('data-editor-selected', 'true');
+      el.classList.add('__editor_selected__');
+      multi.add(el);
+      selectedElRef.current = el;
+      setSelectedInfo(extractElementInfo(el));
+    }
+    setSelectionCount(multi.size);
   }, [extractElementInfo]);
 
   const refreshSelectedInfo = useCallback(() => {
+    // Clean up disconnected elements from multi-select
+    const multi = multiSelectedRef.current;
+    for (const e of Array.from(multi) as HTMLElement[]) {
+      if (!e.isConnected) multi.delete(e);
+    }
+    setSelectionCount(multi.size);
     const el = selectedElRef.current;
     if (el && el.isConnected) setSelectedInfo(extractElementInfo(el));
-    else { setSelectedInfo(null); selectedElRef.current = null; }
+    else {
+      setSelectedInfo(null);
+      selectedElRef.current = null;
+      // Pick another primary if available
+      const remaining: HTMLElement[] = Array.from(multi);
+      if (remaining.length > 0) {
+        selectedElRef.current = remaining[remaining.length - 1];
+        setSelectedInfo(extractElementInfo(selectedElRef.current));
+      }
+    }
   }, [extractElementInfo]);
 
-  // --- Setup iframe interaction (same as before) ---
+  // --- Setup iframe interaction ---
   const setupIframeInteraction = useCallback((doc: Document) => {
     let styleEl = doc.getElementById('__editor_styles__');
     if (!styleEl) {
@@ -372,19 +428,57 @@ function App() {
     styleEl.textContent = `
       .__editor_hover__ { outline: 2px dashed rgba(59,130,246,0.6) !important; outline-offset: 1px !important; cursor: pointer !important; }
       .__editor_selected__ { outline: 2px solid #3b82f6 !important; outline-offset: 1px !important; }
-      .__editor_drag_ghost__ { opacity: 0.4 !important; outline: 2px dashed #f59e0b !important; }
-      .__editor_drop_indicator__ { position: absolute; left: 0; right: 0; height: 3px; background: #3b82f6; pointer-events: none; z-index: 99999; border-radius: 2px; box-shadow: 0 0 6px rgba(59,130,246,0.5); }
+      .__editor_drag_ghost__ { opacity: 0.35 !important; pointer-events: none !important; outline: 2px dashed #f59e0b !important; }
+      .__editor_drop_indicator__ { height: 4px; background: #22c55e; pointer-events: none; z-index: 99999; border-radius: 2px; box-shadow: 0 0 8px rgba(34,197,94,0.6); margin: -2px 4px; position: relative; }
+      .__editor_drop_zone__ { outline: 1px dashed rgba(34,197,94,0.2) !important; outline-offset: -1px !important; }
+      .__editor_drop_target__ { outline: 2px dashed #22c55e !important; outline-offset: -2px !important; background-color: rgba(34,197,94,0.04) !important; }
       .__editor_drag_active__ * { cursor: grabbing !important; }
+      .__editor_drag_label__ { position: fixed; background: #1b1f36; color: #e0e4eb; font-size: 11px; font-family: 'Inter', sans-serif; padding: 5px 10px; border-radius: 6px; pointer-events: none; z-index: 100000; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.5); border: 1px solid #3a3f5c; }
+      .__editor_drag_label__ b { color: #22c55e; font-weight: 600; }
     `;
 
+    const VOID_TAGS = new Set(['IMG', 'INPUT', 'BR', 'HR', 'META', 'LINK', 'AREA', 'BASE', 'COL', 'EMBED', 'SOURCE', 'TRACK', 'WBR']);
+    const SKIP_TAGS = new Set(['HTML', 'HEAD', 'STYLE', 'SCRIPT', 'META', 'LINK', 'TITLE', 'NOSCRIPT']);
+
+    function isContainer(el: HTMLElement): boolean {
+      return !VOID_TAGS.has(el.tagName) && !SKIP_TAGS.has(el.tagName);
+    }
+
+    function isDescendantOfAny(el: HTMLElement, set: Set<HTMLElement>): boolean {
+      let cur: HTMLElement | null = el;
+      while (cur) {
+        if (set.has(cur)) return true;
+        cur = cur.parentElement;
+      }
+      return false;
+    }
+
+    function getElementLabel(el: HTMLElement): string {
+      let label = el.tagName.toLowerCase();
+      if (el.id) label += '#' + el.id;
+      else {
+        const cls = (el.className?.toString() || '').split(' ')
+          .filter(c => c && !c.startsWith('__editor_')).slice(0, 2).join('.');
+        if (cls) label += '.' + cls;
+      }
+      return label;
+    }
+
     let hoveredEl: HTMLElement | null = null;
-    let dragState = {
-      active: false, el: null as HTMLElement | null,
+    let didDrag = false;
+
+    const dragState = {
+      active: false,
       startX: 0, startY: 0, shiftHeld: false,
-      origMarginTop: 0, origMarginLeft: 0,
-      indicator: null as HTMLElement | null, insertBefore: null as HTMLElement | null,
+      origMargins: [] as { el: HTMLElement; top: number; left: number }[],
+      indicator: null as HTMLElement | null,
+      targetContainer: null as HTMLElement | null,
+      insertBefore: null as HTMLElement | null,
+      dragLabel: null as HTMLElement | null,
+      dropZones: [] as HTMLElement[],
     };
 
+    // --- Hover ---
     const onMouseOver = (e: MouseEvent) => {
       if (dragState.active) return;
       const t = e.target as HTMLElement;
@@ -399,13 +493,20 @@ function App() {
       t.classList.remove('__editor_hover__');
       if (hoveredEl === t) hoveredEl = null;
     };
+
+    // --- Click (with multi-select support) ---
     const onClick = (e: MouseEvent) => {
       e.preventDefault(); e.stopPropagation();
-      if (dragState.active) return;
+      if (didDrag) { didDrag = false; return; }
       const t = e.target as HTMLElement;
-      if (t === doc.body || t === doc.documentElement) selectElement(null);
-      else selectElement(t);
+      if (t === doc.body || t === doc.documentElement) {
+        selectElement(null);
+      } else {
+        selectElement(t, e.ctrlKey || e.metaKey);
+      }
     };
+
+    // --- Double-click for inline text editing ---
     const onDblClick = (e: MouseEvent) => {
       e.preventDefault(); e.stopPropagation();
       const t = e.target as HTMLElement;
@@ -416,70 +517,184 @@ function App() {
         t.addEventListener('blur', onBlur);
       }
     };
+
+    // --- Drag (cross-container + free-move + multi-element) ---
     const onMouseDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (!selectedElRef.current || t.contentEditable === 'true') return;
-      const sel = selectedElRef.current;
-      if (!sel.contains(t) && sel !== t) return;
-      dragState.startX = e.clientX; dragState.startY = e.clientY;
-      dragState.el = sel; dragState.shiftHeld = e.shiftKey;
-      const cs = doc.defaultView!.getComputedStyle(sel);
-      dragState.origMarginTop = parseFloat(cs.marginTop) || 0;
-      dragState.origMarginLeft = parseFloat(cs.marginLeft) || 0;
+      if (t.contentEditable === 'true') return;
+
+      const multi = multiSelectedRef.current;
+      if (multi.size === 0) return;
+
+      // Check if clicking on a selected element or its child
+      let clickedOnSelected = false;
+      let cur: HTMLElement | null = t;
+      while (cur) {
+        if (multi.has(cur)) { clickedOnSelected = true; break; }
+        cur = cur.parentElement;
+      }
+      if (!clickedOnSelected) return;
+
+      dragState.startX = e.clientX;
+      dragState.startY = e.clientY;
+      dragState.shiftHeld = e.shiftKey;
+
+      // Store original margins for free-move mode
+      dragState.origMargins = (Array.from(multi) as HTMLElement[]).map(el => {
+        const cs = doc.defaultView!.getComputedStyle(el);
+        return { el, top: parseFloat(cs.marginTop) || 0, left: parseFloat(cs.marginLeft) || 0 };
+      });
+
+      function cleanupDrag() {
+        if (dragState.indicator) { dragState.indicator.remove(); dragState.indicator = null; }
+        if (dragState.targetContainer) { dragState.targetContainer.classList.remove('__editor_drop_target__'); dragState.targetContainer = null; }
+        if (dragState.dragLabel) { dragState.dragLabel.remove(); dragState.dragLabel = null; }
+        dragState.dropZones.forEach(el => el.classList.remove('__editor_drop_zone__'));
+        dragState.dropZones = [];
+        dragState.insertBefore = null;
+      }
 
       const onMove = (me: MouseEvent) => {
         const dx = me.clientX - dragState.startX;
         const dy = me.clientY - dragState.startY;
+
+        // Activate drag after threshold
         if (!dragState.active && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
           dragState.active = true;
+          didDrag = true;
           doc.body.classList.add('__editor_drag_active__');
-          dragState.el?.classList.add('__editor_drag_ghost__');
+          multi.forEach(el => el.classList.add('__editor_drag_ghost__'));
           setIsDragging(true);
-        }
-        if (!dragState.active || !dragState.el) return;
-        if (me.shiftKey || dragState.shiftHeld) {
-          dragState.el.style.marginTop = (dragState.origMarginTop + dy) + 'px';
-          dragState.el.style.marginLeft = (dragState.origMarginLeft + dx) + 'px';
-        } else {
-          const parent = dragState.el.parentElement;
-          if (!parent) return;
-          const siblings = Array.from(parent.children).filter(c => c !== dragState.el && !c.classList.contains('__editor_drop_indicator__'));
-          if (dragState.indicator) { dragState.indicator.remove(); dragState.indicator = null; }
-          let insertBefore: HTMLElement | null = null;
-          for (const sib of siblings) {
-            const rect = sib.getBoundingClientRect();
-            if (me.clientY < rect.top + rect.height / 2) { insertBefore = sib as HTMLElement; break; }
+
+          // Mark valid drop zone containers (not free-move mode)
+          if (!me.shiftKey && !dragState.shiftHeld) {
+            const allEls = doc.body.querySelectorAll('*');
+            allEls.forEach(el => {
+              const htmlEl = el as HTMLElement;
+              if (isContainer(htmlEl) && !multi.has(htmlEl) && !isDescendantOfAny(htmlEl, multi) && htmlEl.offsetParent !== null) {
+                htmlEl.classList.add('__editor_drop_zone__');
+                dragState.dropZones.push(htmlEl);
+              }
+            });
+            // Body is always a drop zone
+            if (!doc.body.classList.contains('__editor_drop_zone__')) {
+              doc.body.classList.add('__editor_drop_zone__');
+              dragState.dropZones.push(doc.body);
+            }
           }
+        }
+
+        if (!dragState.active) return;
+
+        if (me.shiftKey || dragState.shiftHeld) {
+          // Free-move mode: adjust margins on all selected
+          cleanupDrag();
+          for (const { el, top, left } of dragState.origMargins) {
+            el.style.marginTop = (top + dy) + 'px';
+            el.style.marginLeft = (left + dx) + 'px';
+          }
+        } else {
+          // Cross-container drag mode
+          // Use elementFromPoint (ghosted elements have pointer-events: none)
+          const targetEl = doc.elementFromPoint(me.clientX, me.clientY) as HTMLElement | null;
+          if (!targetEl || targetEl === doc.documentElement) {
+            cleanupDrag();
+            return;
+          }
+
+          // Find nearest valid container
+          let container: HTMLElement | null = targetEl;
+          while (container && container !== doc.documentElement) {
+            if (isContainer(container) && !multi.has(container) && !isDescendantOfAny(container, multi)) break;
+            container = container.parentElement;
+          }
+          if (!container || container === doc.documentElement) container = doc.body;
+
+          // Update container highlight
+          if (dragState.targetContainer !== container) {
+            if (dragState.targetContainer) dragState.targetContainer.classList.remove('__editor_drop_target__');
+            container.classList.add('__editor_drop_target__');
+            dragState.targetContainer = container;
+          }
+
+          // Compute insertion position among container's children
+          const children = Array.from(container.children).filter(c =>
+            !c.classList.contains('__editor_drop_indicator__') &&
+            !c.classList.contains('__editor_drag_label__') &&
+            !multi.has(c as HTMLElement)
+          );
+
+          let insertBefore: HTMLElement | null = null;
+          for (const child of children) {
+            const rect = child.getBoundingClientRect();
+            if (me.clientY < rect.top + rect.height / 2) {
+              insertBefore = child as HTMLElement;
+              break;
+            }
+          }
+
+          // Show/update insertion indicator
+          if (dragState.indicator) dragState.indicator.remove();
           const indicator = doc.createElement('div');
           indicator.className = '__editor_drop_indicator__';
-          if (insertBefore) parent.insertBefore(indicator, insertBefore);
-          else parent.appendChild(indicator);
+          if (insertBefore) container.insertBefore(indicator, insertBefore);
+          else container.appendChild(indicator);
           dragState.indicator = indicator;
           dragState.insertBefore = insertBefore;
+
+          // Floating label showing target
+          if (!dragState.dragLabel) {
+            dragState.dragLabel = doc.createElement('div');
+            dragState.dragLabel.className = '__editor_drag_label__';
+            doc.body.appendChild(dragState.dragLabel);
+          }
+          const containerLabel = getElementLabel(container);
+          const posLabel = insertBefore ? `before <b>${getElementLabel(insertBefore)}</b>` : '<b>end</b>';
+          const countStr = multi.size > 1 ? `(${multi.size}) ` : '';
+          dragState.dragLabel.innerHTML = `${countStr}\u2192 <b>${containerLabel}</b> &bull; ${posLabel}`;
+          dragState.dragLabel.style.left = (me.clientX + 18) + 'px';
+          dragState.dragLabel.style.top = (me.clientY - 14) + 'px';
         }
       };
+
       const onUp = () => {
         doc.removeEventListener('mousemove', onMove);
         doc.removeEventListener('mouseup', onUp);
-        if (dragState.active && dragState.el) {
-          dragState.el.classList.remove('__editor_drag_ghost__');
+
+        if (dragState.active) {
+          multi.forEach(el => el.classList.remove('__editor_drag_ghost__'));
           doc.body.classList.remove('__editor_drag_active__');
-          if (!dragState.shiftHeld && !e.shiftKey) {
-            const parent = dragState.el.parentElement;
-            if (parent && dragState.indicator) {
-              if (dragState.insertBefore) parent.insertBefore(dragState.el, dragState.insertBefore);
-              else parent.insertBefore(dragState.el, dragState.indicator);
+
+          // Perform the move if in container-drag mode
+          if (!dragState.shiftHeld && dragState.targetContainer) {
+            const container = dragState.targetContainer;
+            const beforeEl = dragState.insertBefore;
+
+            // Sort selected by DOM order to maintain relative order
+            const sorted = (Array.from(multi) as HTMLElement[]).sort((a, b) => {
+              const pos = a.compareDocumentPosition(b);
+              return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+            });
+
+            for (const el of sorted) {
+              if (beforeEl) container.insertBefore(el, beforeEl);
+              else container.appendChild(el);
             }
           }
-          if (dragState.indicator) { dragState.indicator.remove(); dragState.indicator = null; }
-          pushHistory(); refreshSelectedInfo();
+
+          cleanupDrag();
+          pushHistory();
+          refreshSelectedInfo();
         }
-        dragState.active = false; dragState.el = null; dragState.insertBefore = null;
+
+        dragState.active = false;
         setIsDragging(false);
       };
+
       doc.addEventListener('mousemove', onMove);
       doc.addEventListener('mouseup', onUp);
     };
+
     const onClickCapture = (e: MouseEvent) => { if ((e.target as HTMLElement).tagName === 'A') e.preventDefault(); };
     const onSubmit = (e: Event) => { e.preventDefault(); };
 
@@ -751,37 +966,76 @@ function App() {
 
   // --- Element operations ---
   const duplicateSelected = useCallback(() => {
-    const el = selectedElRef.current;
-    if (!el || !el.parentElement) return;
-    const clone = el.cloneNode(true) as HTMLElement;
-    clone.removeAttribute('data-editor-selected');
-    clone.classList.remove('__editor_selected__');
-    if (clone.id) clone.id = clone.id + '-copy';
-    el.parentElement.insertBefore(clone, el.nextSibling);
-    pushHistory(); selectElement(clone);
+    const multi = multiSelectedRef.current;
+    if (multi.size === 0) return;
+    // Sort by DOM order
+    const sorted = (Array.from(multi) as HTMLElement[]).sort((a, b) => {
+      const pos = a.compareDocumentPosition(b);
+      return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+    const clones: HTMLElement[] = [];
+    for (const el of sorted) {
+      if (!el.parentElement) continue;
+      const clone = el.cloneNode(true) as HTMLElement;
+      clone.removeAttribute('data-editor-selected');
+      clone.classList.remove('__editor_selected__');
+      if (clone.id) clone.id = clone.id + '-copy';
+      el.parentElement.insertBefore(clone, el.nextSibling);
+      clones.push(clone);
+    }
+    pushHistory();
+    // Select the clones
+    selectElement(null);
+    for (const clone of clones) selectElement(clone, true);
   }, [pushHistory, selectElement]);
 
   const deleteSelected = useCallback(() => {
-    const el = selectedElRef.current;
-    if (!el || !el.parentElement) return;
-    const next = el.nextElementSibling || el.previousElementSibling;
-    el.parentElement.removeChild(el);
+    const multi = multiSelectedRef.current;
+    if (multi.size === 0) return;
+    const elements: HTMLElement[] = Array.from(multi);
+    let nextFocus: Element | null = null;
+    for (const el of elements) {
+      if (!el.parentElement) continue;
+      if (!nextFocus) nextFocus = el.nextElementSibling || el.previousElementSibling;
+      el.parentElement.removeChild(el);
+    }
+    multi.clear();
+    setSelectionCount(0);
     pushHistory();
-    if (next && isEditable(next as HTMLElement)) selectElement(next as HTMLElement);
+    if (nextFocus && nextFocus.isConnected && isEditable(nextFocus as HTMLElement)) selectElement(nextFocus as HTMLElement);
     else selectElement(null);
   }, [pushHistory, selectElement]);
 
   const moveSelected = useCallback((direction: 'up' | 'down') => {
-    const el = selectedElRef.current;
-    if (!el || !el.parentElement) return;
-    const parent = el.parentElement;
+    const multi = multiSelectedRef.current;
+    if (multi.size === 0) return;
+    // Sort by DOM order
+    const sorted = (Array.from(multi) as HTMLElement[]).sort((a, b) => {
+      const pos = a.compareDocumentPosition(b);
+      return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+    let moved = false;
     if (direction === 'up') {
-      const prev = el.previousElementSibling;
-      if (prev) { parent.insertBefore(el, prev); pushHistory(); refreshSelectedInfo(); }
+      for (const el of sorted) {
+        if (!el.parentElement) continue;
+        const prev = el.previousElementSibling;
+        if (prev && !multi.has(prev as HTMLElement)) {
+          el.parentElement.insertBefore(el, prev);
+          moved = true;
+        }
+      }
     } else {
-      const next = el.nextElementSibling;
-      if (next) { parent.insertBefore(el, next.nextSibling); pushHistory(); refreshSelectedInfo(); }
+      // Reverse order for moving down
+      for (const el of sorted.reverse()) {
+        if (!el.parentElement) continue;
+        const next = el.nextElementSibling;
+        if (next && !multi.has(next as HTMLElement)) {
+          el.parentElement.insertBefore(el, next.nextSibling);
+          moved = true;
+        }
+      }
     }
+    if (moved) { pushHistory(); refreshSelectedInfo(); }
   }, [pushHistory, refreshSelectedInfo]);
 
   // --- Style updates ---
@@ -905,6 +1159,20 @@ function App() {
       else if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); moveSelected('up'); }
       else if (e.altKey && e.key === 'ArrowDown') { e.preventDefault(); moveSelected('down'); }
       else if (e.key === 'Escape') selectElement(null);
+      else if (ctrl && e.key === 'a') {
+        // Select all editable elements in iframe body
+        e.preventDefault();
+        const doc = iframeRef.current?.contentDocument;
+        if (doc) {
+          selectElement(null);
+          const all = doc.body.querySelectorAll('*');
+          all.forEach(el => {
+            if (isEditable(el as HTMLElement) && (el as HTMLElement).offsetParent !== null) {
+              selectElement(el as HTMLElement, true);
+            }
+          });
+        }
+      }
     };
     window.addEventListener('keydown', handler);
     const t = setTimeout(() => {
@@ -1016,13 +1284,34 @@ function App() {
             />
           </div>
           {!isLoaded && <WelcomeScreen onOpenFolder={openFolder} onOpenFile={openFile} />}
+
+          {/* Drag hint overlay */}
           {isDragging && (
             <div style={{
               position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
-              background: '#3b82f6', color: '#fff', padding: '6px 16px', borderRadius: '20px',
-              fontSize: '12px', fontWeight: 500, zIndex: 100, pointerEvents: 'none', boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+              background: '#1b1f36', color: '#e0e4eb', padding: '6px 16px', borderRadius: '20px',
+              fontSize: '12px', fontWeight: 500, zIndex: 100, pointerEvents: 'none',
+              boxShadow: '0 2px 12px rgba(0,0,0,0.4)', border: '1px solid #3a3f5c',
+              display: 'flex', alignItems: 'center', gap: '8px',
             }}>
-              Hold Shift for free-move mode
+              {selectionCount > 1 && (
+                <span style={{ background: '#3b82f6', color: '#fff', borderRadius: '10px', padding: '1px 7px', fontSize: '11px', fontWeight: 600 }}>
+                  {selectionCount}
+                </span>
+              )}
+              Drag to move &bull; Hold Shift for free-move
+            </div>
+          )}
+
+          {/* Selection count indicator */}
+          {!isDragging && selectionCount > 1 && isLoaded && (
+            <div style={{
+              position: 'absolute', top: '8px', right: '8px',
+              background: '#3b82f6', color: '#fff', padding: '4px 12px', borderRadius: '12px',
+              fontSize: '11px', fontWeight: 600, zIndex: 100, pointerEvents: 'none',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+            }}>
+              {selectionCount} selected &bull; Ctrl+Click to add/remove
             </div>
           )}
 
