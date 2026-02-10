@@ -1108,6 +1108,18 @@ function App() {
     selectElement(newEl);
   }, [pushHistory, selectElement]);
 
+  // --- Clear all styles from selected element(s) ---
+  const clearElementStyles = useCallback(() => {
+    const multi = multiSelectedRef.current;
+    if (multi.size === 0) return;
+    const elements: HTMLElement[] = Array.from(multi);
+    for (const el of elements) {
+      el.removeAttribute('style');
+    }
+    pushHistory();
+    refreshSelectedInfo();
+  }, [pushHistory, refreshSelectedInfo]);
+
   // --- Enable grid on parent ---
   const enableGridOnParent = useCallback(() => {
     const el = selectedElRef.current;
@@ -1379,6 +1391,8 @@ function App() {
             onEditInnerHTML={editInnerHTML}
             onTagChange={changeTag}
             onEnableGrid={enableGridOnParent}
+            onClearStyles={clearElementStyles}
+            selectionCount={selectionCount}
           />
         )}
       </div>

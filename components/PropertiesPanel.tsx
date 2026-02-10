@@ -15,6 +15,8 @@ interface PropertiesPanelProps {
   onEditInnerHTML: (html: string) => void;
   onTagChange: (newTag: string) => void;
   onEnableGrid: () => void;
+  onClearStyles: () => void;
+  selectionCount?: number;
 }
 
 // ===== Styles =====
@@ -272,7 +274,7 @@ function GridColumnPicker({ styles, isInGrid, onStyleChange, onEnableGrid }: {
 // ===== Main Panel =====
 
 export function PropertiesPanel(props: PropertiesPanelProps) {
-  const { selectedInfo, onStyleChange, onClassChange, onIdChange, onTextChange, onEditInnerHTML, onTagChange, onEnableGrid } = props;
+  const { selectedInfo, onStyleChange, onClassChange, onIdChange, onTextChange, onEditInnerHTML, onTagChange, onEnableGrid, onClearStyles, selectionCount = 1 } = props;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingHtml, setEditingHtml] = useState(false);
   const [htmlDraft, setHtmlDraft] = useState('');
@@ -310,6 +312,24 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
           <label style={labelStyle}>Class</label>
           <DeferredInput value={selectedInfo.className} onCommit={onClassChange} style={inputStyle} placeholder="class names" />
         </div>
+        {/* Clear Styles Button */}
+        <button
+          onClick={onClearStyles}
+          style={{
+            width: '100%', marginTop: '8px', padding: '7px 0', fontSize: '11px', fontWeight: 600,
+            fontFamily: 'JetBrains Mono, monospace',
+            background: 'linear-gradient(135deg, #7f1d1d, #991b1b)',
+            border: '1px solid #dc2626', borderRadius: '5px',
+            color: '#fca5a5', cursor: 'pointer',
+            transition: 'all 0.15s',
+            letterSpacing: '0.3px',
+          }}
+          onMouseEnter={e => { (e.target as HTMLElement).style.background = 'linear-gradient(135deg, #991b1b, #b91c1c)'; (e.target as HTMLElement).style.color = '#fff'; }}
+          onMouseLeave={e => { (e.target as HTMLElement).style.background = 'linear-gradient(135deg, #7f1d1d, #991b1b)'; (e.target as HTMLElement).style.color = '#fca5a5'; }}
+          title="Remove all inline styles from the selected element(s) so you can apply fresh settings"
+        >
+          {selectionCount > 1 ? `Clear Styles (${selectionCount} elements)` : 'Clear Styles'}
+        </button>
       </div>
 
       {/* === Text Content (leaf elements) === */}
