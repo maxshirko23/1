@@ -196,6 +196,154 @@ function generatePattern(
   return grid;
 }
 
+// ==================== ANIMATED FRAME GENERATION ====================
+
+function generateAnimatedFrames(
+  width: number,
+  height: number,
+  fillPercent: number,
+  numFrames: number = 8
+): boolean[][][] {
+  const seed = Math.floor(Math.random() * 999999);
+  const rng = mulberry32(seed);
+
+  // Drift radius: how far the "camera" slides through the noise field
+  const driftRadius = Math.max(2, Math.round(Math.max(width, height) * 0.06));
+  const pad = driftRadius * 2 + 2;
+  const totalW = width + pad;
+  const totalH = height + pad;
+
+  // --- Layer 1: low-frequency shape noise ---
+  const baseScale = Math.max(totalW, totalH) / (2 + rng() * 5);
+  const octaves = 2 + Math.floor(rng() * 3);
+  const useWarp = rng() > 0.3;
+  const warpStrength = useWarp ? 0.5 + rng() * 3 : 0;
+
+  let noise: number[][] = Array.from({ length: totalH }, () =>
+    new Array(totalW).fill(0)
+  );
+  let amplitude = 1;
+  let totalAmplitude = 0;
+
+  for (let o = 0; o < octaves; o++) {
+    const scale = baseScale / Math.pow(2, o);
+    const layer = valueNoise2D(totalW, totalH, scale, rng);
+    for (let y = 0; y < totalH; y++) {
+      for (let x = 0; x < totalW; x++) {
+        noise[y][x] += layer[y][x] * amplitude;
+      }
+    }
+    totalAmplitude += amplitude;
+    amplitude *= 0.5;
+  }
+
+  for (let y = 0; y < totalH; y++) {
+    for (let x = 0; x < totalW; x++) {
+      noise[y][x] /= totalAmplitude;
+    }
+  }
+
+  if (useWarp) {
+    const warpNoiseX = valueNoise2D(totalW, totalH, baseScale * 0.7, rng);
+    const warpNoiseY = valueNoise2D(totalW, totalH, baseScale * 0.7, rng);
+    const warped: number[][] = Array.from({ length: totalH }, () =>
+      new Array(totalW).fill(0)
+    );
+    for (let y = 0; y < totalH; y++) {
+      for (let x = 0; x < totalW; x++) {
+        const wx = Math.min(
+          totalW - 1,
+          Math.max(
+            0,
+            Math.round(
+              x + (warpNoiseX[y][x] - 0.5) * warpStrength * baseScale
+            )
+          )
+        );
+        const wy = Math.min(
+          totalH - 1,
+          Math.max(
+            0,
+            Math.round(
+              y + (warpNoiseY[y][x] - 0.5) * warpStrength * baseScale
+            )
+          )
+        );
+        warped[y][x] = noise[wy][wx];
+      }
+    }
+    noise = warped;
+  }
+
+  // --- Layer 2: high-frequency detail noise ---
+  const detailScale = Math.max(totalW, totalH) / (12 + rng() * 18);
+  const detailOctaves = 3 + Math.floor(rng() * 3);
+  const detail: number[][] = Array.from({ length: totalH }, () =>
+    new Array(totalW).fill(0)
+  );
+  let dAmp = 1;
+  let dTotal = 0;
+  for (let o = 0; o < detailOctaves; o++) {
+    const scale = detailScale / Math.pow(2, o);
+    const layer = valueNoise2D(totalW, totalH, scale, rng);
+    for (let y = 0; y < totalH; y++) {
+      for (let x = 0; x < totalW; x++) {
+        detail[y][x] += layer[y][x] * dAmp;
+      }
+    }
+    dTotal += dAmp;
+    dAmp *= 0.6;
+  }
+  for (let y = 0; y < totalH; y++) {
+    for (let x = 0; x < totalW; x++) {
+      detail[y][x] /= dTotal;
+    }
+  }
+
+  // --- Blend ---
+  const detailWeight = 0.3 + rng() * 0.15;
+  for (let y = 0; y < totalH; y++) {
+    for (let x = 0; x < totalW; x++) {
+      noise[y][x] =
+        noise[y][x] * (1 - detailWeight) + detail[y][x] * detailWeight;
+    }
+  }
+
+  // --- Sample frames by sliding a window in a circle ---
+  const frames: boolean[][][] = [];
+  const cx = Math.floor(pad / 2);
+  const cy = Math.floor(pad / 2);
+
+  for (let f = 0; f < numFrames; f++) {
+    const angle = (2 * Math.PI * f) / numFrames;
+    const ox = cx + Math.round(Math.cos(angle) * driftRadius);
+    const oy = cy + Math.round(Math.sin(angle) * driftRadius);
+
+    // Compute per-frame threshold for consistent fill %
+    const vals: number[] = [];
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        vals.push(noise[oy + y][ox + x]);
+      }
+    }
+    vals.sort((a, b) => a - b);
+    const total = width * height;
+    const threshold =
+      vals[Math.max(0, total - Math.floor((total * fillPercent) / 100))] ?? 0.5;
+
+    const grid: boolean[][] = [];
+    for (let y = 0; y < height; y++) {
+      grid[y] = [];
+      for (let x = 0; x < width; x++) {
+        grid[y][x] = noise[oy + y][ox + x] >= threshold;
+      }
+    }
+    frames.push(grid);
+  }
+
+  return frames;
+}
+
 // ==================== SVG MERGING ====================
 
 interface MergedRect {
@@ -280,6 +428,33 @@ function buildSVGString(
   ].join('\n');
 }
 
+function buildAnimatedSVGString(
+  frames: boolean[][][],
+  gridW: number,
+  gridH: number,
+  pixelColor: string,
+  bgColor: string,
+  duration: number,
+  extraAttrs: string = ''
+): string {
+  const pathDs = frames.map((grid) => {
+    const rects = mergePixelsToRects(grid, gridW, gridH);
+    return rectsToPathD(rects);
+  });
+
+  // Loop back to first frame for seamless repeat
+  const values = [...pathDs, pathDs[0]].join(';\n');
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${gridW} ${gridH}" shape-rendering="crispEdges"${extraAttrs ? ' ' + extraAttrs : ''}>`,
+    `<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`,
+    `<path d="${pathDs[0]}" fill="${pixelColor}">`,
+    `<animate attributeName="d" calcMode="discrete" dur="${duration}s" repeatCount="indefinite" values="${values}"/>`,
+    `</path>`,
+    `</svg>`,
+  ].join('\n');
+}
+
 // ==================== APP COMPONENT ====================
 
 function App() {
@@ -290,8 +465,10 @@ function App() {
   const [bgColor, setBgColor] = useState('#ffffff');
   const [pngWidth, setPngWidth] = useState(1024);
   const [pngHeight, setPngHeight] = useState(1024);
+  const [animDuration, setAnimDuration] = useState(3);
 
   const [grid, setGrid] = useState<boolean[][] | null>(null);
+  const [frames, setFrames] = useState<boolean[][][] | null>(null);
   const [displaySVG, setDisplaySVG] = useState('');
   const [rectCount, setRectCount] = useState(0);
   const [filledCount, setFilledCount] = useState(0);
@@ -299,71 +476,81 @@ function App() {
   const handleGenerate = useCallback(() => {
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
-    const newGrid = generatePattern(w, h, fillPercent);
-    setGrid(newGrid);
+    const newFrames = generateAnimatedFrames(w, h, fillPercent, 8);
+    const firstFrame = newFrames[0];
+    setFrames(newFrames);
+    setGrid(firstFrame);
 
-    // Count filled pixels
+    // Count filled pixels (from first frame)
     let filled = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        if (newGrid[y][x]) filled++;
+        if (firstFrame[y][x]) filled++;
       }
     }
     setFilledCount(filled);
 
-    const rects = mergePixelsToRects(newGrid, w, h);
+    const rects = mergePixelsToRects(firstFrame, w, h);
     setRectCount(rects.length);
 
-    const svg = buildSVGString(
-      newGrid,
+    const svg = buildAnimatedSVGString(
+      newFrames,
       w,
       h,
       pixelColor,
       bgColor,
+      animDuration,
       'style="width:100%;height:100%;display:block"'
     );
     setDisplaySVG(svg);
-  }, [gridWidth, gridHeight, fillPercent, pixelColor, bgColor]);
+  }, [gridWidth, gridHeight, fillPercent, pixelColor, bgColor, animDuration]);
 
-  // Update display when colors change without regenerating the pattern
-  const updateColors = useCallback(
-    (newPixelColor: string, newBgColor: string) => {
-      if (!grid) return;
+  // Update display when colors or duration change without regenerating
+  const updateDisplay = useCallback(
+    (newPixelColor: string, newBgColor: string, newDuration: number) => {
+      if (!frames) return;
       const w = Math.max(1, Math.min(512, gridWidth));
       const h = Math.max(1, Math.min(512, gridHeight));
-      const svg = buildSVGString(
-        grid,
+      const svg = buildAnimatedSVGString(
+        frames,
         w,
         h,
         newPixelColor,
         newBgColor,
+        newDuration,
         'style="width:100%;height:100%;display:block"'
       );
       setDisplaySVG(svg);
     },
-    [grid, gridWidth, gridHeight]
+    [frames, gridWidth, gridHeight]
   );
 
   const handlePixelColorChange = (color: string) => {
     setPixelColor(color);
-    updateColors(color, bgColor);
+    updateDisplay(color, bgColor, animDuration);
   };
 
   const handleBgColorChange = (color: string) => {
     setBgColor(color);
-    updateColors(pixelColor, color);
+    updateDisplay(pixelColor, color, animDuration);
+  };
+
+  const handleDurationChange = (dur: number) => {
+    setAnimDuration(dur);
+    updateDisplay(pixelColor, bgColor, dur);
   };
 
   const handleDownloadSVG = useCallback(() => {
-    if (!grid) return;
+    if (!frames) return;
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
-    const svg = buildSVGString(
-      grid,
+    const svg = buildAnimatedSVGString(
+      frames,
       w,
       h,
       pixelColor,
       bgColor,
+      animDuration,
       `width="${w}" height="${h}"`
     );
 
@@ -374,14 +561,14 @@ function App() {
     a.download = `pixel-art-${w}x${h}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [grid, gridWidth, gridHeight, pixelColor, bgColor]);
+  }, [frames, gridWidth, gridHeight, pixelColor, bgColor, animDuration]);
 
   const handleDownloadPNG = useCallback(() => {
     if (!grid) return;
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
 
-    // Build SVG with PNG export dimensions for crisp rendering
+    // PNG uses first frame (static snapshot)
     const svg = buildSVGString(
       grid,
       w,
@@ -551,6 +738,33 @@ function App() {
             </div>
           </div>
 
+          {/* Animation Speed */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              Animation Speed
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={0.5}
+                value={animDuration}
+                onChange={(e) =>
+                  handleDurationChange(parseFloat(e.target.value))
+                }
+                className="flex-1 accent-indigo-500 h-1.5"
+              />
+              <span className="mono text-sm text-indigo-400 w-12 text-right">
+                {animDuration}s
+              </span>
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-600 mt-1">
+              <span>Fast</span>
+              <span>Slow</span>
+            </div>
+          </div>
+
           {/* Generate Button */}
           <button
             onClick={handleGenerate}
@@ -582,6 +796,14 @@ function App() {
                   %
                 </span>
               </div>
+              {frames && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">Animation</span>
+                  <span className="mono text-sky-400">
+                    {frames.length} frames / {animDuration}s
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -634,7 +856,7 @@ function App() {
           <div className="flex gap-2">
             <button
               onClick={handleDownloadSVG}
-              disabled={!grid}
+              disabled={!frames}
               className="flex-1 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-lg py-2.5 font-semibold text-sm cursor-pointer"
             >
               SVG
@@ -651,7 +873,7 @@ function App() {
 
         {/* Footer */}
         <div className="p-4 border-t border-slate-800 text-[10px] text-slate-600 text-center">
-          Single-layer merged SVG output
+          Animated pixel-art SVG output
         </div>
       </div>
 
