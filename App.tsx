@@ -336,7 +336,8 @@ function generateAnimatedLayers(
   width: number,
   height: number,
   fillPercent: number,
-  numFrames: number = 10
+  mainFrames: number = 8,
+  overlayFrames: number = 6
 ): AnimatedLayers {
   const seed = Math.floor(Math.random() * 999999);
   const rng = mulberry32(seed);
@@ -374,14 +375,14 @@ function generateAnimatedLayers(
   // Main: clockwise, full drift radius
   const main = sampleFrames(
     mainNoise, width, height, fillPercent,
-    numFrames, cx, cy, driftRadius, true
+    mainFrames, cx, cy, driftRadius, true
   );
 
   // Overlay: counter-clockwise, smaller radius, sparser fill
   const overlayFill = Math.max(10, Math.round(fillPercent * 0.4));
   const overlay = sampleFrames(
     overlayNoise, width, height, overlayFill,
-    numFrames, cx, cy, Math.round(driftRadius * 0.7), false
+    overlayFrames, cx, cy, Math.round(driftRadius * 0.7), false
   );
 
   return { main, overlay };
@@ -447,8 +448,9 @@ function mergePixelsToRects(
 }
 
 function rectsToPathD(rects: MergedRect[]): string {
+  // Omit z: SVG auto-closes subpaths on next M and at path end
   return rects
-    .map((r) => `M${r.x} ${r.y}h${r.w}v${r.h}h${-r.w}z`)
+    .map((r) => `M${r.x},${r.y}h${r.w}v${r.h}h${-r.w}`)
     .join('');
 }
 
@@ -462,13 +464,14 @@ function buildSVGString(
 ): string {
   const rects = mergePixelsToRects(grid, gridW, gridH);
   const pathD = rectsToPathD(rects);
-
-  return [
+  const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${gridW} ${gridH}" shape-rendering="crispEdges"${extraAttrs ? ' ' + extraAttrs : ''}>`,
-    `<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`,
-    `<path d="${pathD}" fill="${pixelColor}"/>`,
-    `</svg>`,
-  ].join('\n');
+  ];
+  if (bgColor !== 'none') {
+    parts.push(`<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`);
+  }
+  parts.push(`<path d="${pathD}" fill="${pixelColor}"/>`, `</svg>`);
+  return parts.join('\n');
 }
 
 function buildAnimatedSVGString(
@@ -494,9 +497,13 @@ function buildAnimatedSVGString(
   const overlayDur = (duration * 0.7).toFixed(2);
   const breathDur = (duration * 2.2).toFixed(2);
 
-  return [
+  const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${gridW} ${gridH}" shape-rendering="crispEdges"${extraAttrs ? ' ' + extraAttrs : ''}>`,
-    `<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`,
+  ];
+  if (bgColor !== 'none') {
+    parts.push(`<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`);
+  }
+  parts.push(
     `<path d="${mainDs[0]}" fill="${pixelColor}">`,
     `<animate attributeName="d" calcMode="discrete" dur="${duration}s" repeatCount="indefinite" values="${mainValues}"/>`,
     `</path>`,
@@ -504,8 +511,9 @@ function buildAnimatedSVGString(
     `<animate attributeName="d" calcMode="discrete" dur="${overlayDur}s" repeatCount="indefinite" values="${overlayValues}"/>`,
     `<animate attributeName="opacity" dur="${breathDur}s" repeatCount="indefinite" values="0.15;0.35;0.15" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>`,
     `</path>`,
-    `</svg>`,
-  ].join('\n');
+    `</svg>`
+  );
+  return parts.join('\n');
 }
 
 // ==================== APP COMPONENT ====================
@@ -516,6 +524,7 @@ function App() {
   const [fillPercent, setFillPercent] = useState(60);
   const [pixelColor, setPixelColor] = useState('#000000');
   const [bgColor, setBgColor] = useState('#ffffff');
+  const [transparentBg, setTransparentBg] = useState(true);
   const [pngWidth, setPngWidth] = useState(1024);
   const [pngHeight, setPngHeight] = useState(1024);
   const [animDuration, setAnimDuration] = useState(3);
@@ -525,16 +534,18 @@ function App() {
   const [displaySVG, setDisplaySVG] = useState('');
   const [rectCount, setRectCount] = useState(0);
   const [filledCount, setFilledCount] = useState(0);
+  const [svgSizeKB, setSvgSizeKB] = useState(0);
+
+  const effectiveBg = transparentBg ? 'none' : bgColor;
 
   const handleGenerate = useCallback(() => {
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
-    const newLayers = generateAnimatedLayers(w, h, fillPercent, 10);
+    const newLayers = generateAnimatedLayers(w, h, fillPercent);
     const firstFrame = newLayers.main[0];
     setLayers(newLayers);
     setGrid(firstFrame);
 
-    // Count filled pixels (from first frame)
     let filled = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -551,46 +562,47 @@ function App() {
       w,
       h,
       pixelColor,
-      bgColor,
+      effectiveBg,
       animDuration,
       'style="width:100%;height:100%;display:block"'
     );
     setDisplaySVG(svg);
-  }, [gridWidth, gridHeight, fillPercent, pixelColor, bgColor, animDuration]);
+    setSvgSizeKB(+(svg.length / 1024).toFixed(1));
+  }, [gridWidth, gridHeight, fillPercent, pixelColor, effectiveBg, animDuration]);
 
-  // Update display when colors or duration change without regenerating
-  const updateDisplay = useCallback(
-    (newPixelColor: string, newBgColor: string, newDuration: number) => {
+  const rebuildDisplay = useCallback(
+    (pc: string, bg: string, dur: number) => {
       if (!layers) return;
       const w = Math.max(1, Math.min(512, gridWidth));
       const h = Math.max(1, Math.min(512, gridHeight));
       const svg = buildAnimatedSVGString(
-        layers,
-        w,
-        h,
-        newPixelColor,
-        newBgColor,
-        newDuration,
+        layers, w, h, pc, bg, dur,
         'style="width:100%;height:100%;display:block"'
       );
       setDisplaySVG(svg);
+      setSvgSizeKB(+(svg.length / 1024).toFixed(1));
     },
     [layers, gridWidth, gridHeight]
   );
 
   const handlePixelColorChange = (color: string) => {
     setPixelColor(color);
-    updateDisplay(color, bgColor, animDuration);
+    rebuildDisplay(color, effectiveBg, animDuration);
   };
 
   const handleBgColorChange = (color: string) => {
     setBgColor(color);
-    updateDisplay(pixelColor, color, animDuration);
+    if (!transparentBg) rebuildDisplay(pixelColor, color, animDuration);
+  };
+
+  const handleTransparentBgChange = (on: boolean) => {
+    setTransparentBg(on);
+    rebuildDisplay(pixelColor, on ? 'none' : bgColor, animDuration);
   };
 
   const handleDurationChange = (dur: number) => {
     setAnimDuration(dur);
-    updateDisplay(pixelColor, bgColor, dur);
+    rebuildDisplay(pixelColor, effectiveBg, dur);
   };
 
   const handleDownloadSVG = useCallback(() => {
@@ -598,12 +610,7 @@ function App() {
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
     const svg = buildAnimatedSVGString(
-      layers,
-      w,
-      h,
-      pixelColor,
-      bgColor,
-      animDuration,
+      layers, w, h, pixelColor, effectiveBg, animDuration,
       `width="${w}" height="${h}"`
     );
 
@@ -614,20 +621,15 @@ function App() {
     a.download = `pixel-art-${w}x${h}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [layers, gridWidth, gridHeight, pixelColor, bgColor, animDuration]);
+  }, [layers, gridWidth, gridHeight, pixelColor, effectiveBg, animDuration]);
 
   const handleDownloadPNG = useCallback(() => {
     if (!grid) return;
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
 
-    // PNG uses first frame (static snapshot)
     const svg = buildSVGString(
-      grid,
-      w,
-      h,
-      pixelColor,
-      bgColor,
+      grid, w, h, pixelColor, effectiveBg,
       `width="${pngWidth}" height="${pngHeight}"`
     );
 
@@ -659,7 +661,7 @@ function App() {
       }, 'image/png');
     };
     img.src = url;
-  }, [grid, gridWidth, gridHeight, pixelColor, bgColor, pngWidth, pngHeight]);
+  }, [grid, gridWidth, gridHeight, pixelColor, effectiveBg, pngWidth, pngHeight]);
 
   const totalPixels = Math.max(1, Math.min(512, gridWidth)) * Math.max(1, Math.min(512, gridHeight));
 
@@ -769,25 +771,38 @@ function App() {
                   />
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={bgColor}
-                  onChange={(e) => handleBgColorChange(e.target.value)}
-                  className="w-9 h-9 rounded-md cursor-pointer bg-transparent border border-slate-700"
-                />
-                <div className="flex-1">
-                  <label className="block text-[10px] text-slate-500 mb-0.5">
-                    Background
-                  </label>
+              <div className="flex items-center gap-2 mt-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
-                    type="text"
+                    type="checkbox"
+                    checked={transparentBg}
+                    onChange={(e) => handleTransparentBgChange(e.target.checked)}
+                    className="accent-indigo-500 w-4 h-4 rounded cursor-pointer"
+                  />
+                  <span className="text-xs text-slate-400">Transparent background</span>
+                </label>
+              </div>
+              {!transparentBg && (
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    type="color"
                     value={bgColor}
                     onChange={(e) => handleBgColorChange(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs mono focus:outline-none focus:border-indigo-500"
+                    className="w-9 h-9 rounded-md cursor-pointer bg-transparent border border-slate-700"
                   />
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-slate-500 mb-0.5">
+                      Background
+                    </label>
+                    <input
+                      type="text"
+                      value={bgColor}
+                      onChange={(e) => handleBgColorChange(e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs mono focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
 
@@ -850,12 +865,20 @@ function App() {
                 </span>
               </div>
               {layers && (
-                <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Animation</span>
-                  <span className="mono text-sky-400">
-                    2 layers &times; {layers.main.length}f / {animDuration}s
-                  </span>
-                </div>
+                <>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-500">Animation</span>
+                    <span className="mono text-sky-400">
+                      {layers.main.length}+{layers.overlay.length}f / {animDuration}s
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-500">SVG size</span>
+                    <span className={`mono ${svgSizeKB > 80 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {svgSizeKB} KB
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           )}
