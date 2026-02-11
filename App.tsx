@@ -198,52 +198,49 @@ function generatePattern(
 
 // ==================== ANIMATED FRAME GENERATION ====================
 
-function generateAnimatedFrames(
-  width: number,
-  height: number,
-  fillPercent: number,
-  numFrames: number = 8
-): boolean[][][] {
-  const seed = Math.floor(Math.random() * 999999);
-  const rng = mulberry32(seed);
+interface AnimatedLayers {
+  main: boolean[][][];
+  overlay: boolean[][][];
+}
 
-  // Drift radius: how far the "camera" slides through the noise field
-  const driftRadius = Math.max(2, Math.round(Math.max(width, height) * 0.06));
-  const pad = driftRadius * 2 + 2;
-  const totalW = width + pad;
-  const totalH = height + pad;
-
-  // --- Layer 1: low-frequency shape noise ---
-  const baseScale = Math.max(totalW, totalH) / (2 + rng() * 5);
-  const octaves = 2 + Math.floor(rng() * 3);
-  const useWarp = rng() > 0.3;
-  const warpStrength = useWarp ? 0.5 + rng() * 3 : 0;
+function buildNoiseField(
+  totalW: number,
+  totalH: number,
+  rng: () => number,
+  baseDiv: number,
+  octaves: number,
+  doWarp: boolean,
+  warpStr: number,
+  detailDiv: number,
+  detailOct: number
+): number[][] {
+  const baseScale = Math.max(totalW, totalH) / baseDiv;
 
   let noise: number[][] = Array.from({ length: totalH }, () =>
     new Array(totalW).fill(0)
   );
-  let amplitude = 1;
-  let totalAmplitude = 0;
+  let amp = 1;
+  let totAmp = 0;
 
   for (let o = 0; o < octaves; o++) {
     const scale = baseScale / Math.pow(2, o);
     const layer = valueNoise2D(totalW, totalH, scale, rng);
     for (let y = 0; y < totalH; y++) {
       for (let x = 0; x < totalW; x++) {
-        noise[y][x] += layer[y][x] * amplitude;
+        noise[y][x] += layer[y][x] * amp;
       }
     }
-    totalAmplitude += amplitude;
-    amplitude *= 0.5;
+    totAmp += amp;
+    amp *= 0.5;
   }
 
   for (let y = 0; y < totalH; y++) {
     for (let x = 0; x < totalW; x++) {
-      noise[y][x] /= totalAmplitude;
+      noise[y][x] /= totAmp;
     }
   }
 
-  if (useWarp) {
+  if (doWarp) {
     const warpNoiseX = valueNoise2D(totalW, totalH, baseScale * 0.7, rng);
     const warpNoiseY = valueNoise2D(totalW, totalH, baseScale * 0.7, rng);
     const warped: number[][] = Array.from({ length: totalH }, () =>
@@ -253,21 +250,11 @@ function generateAnimatedFrames(
       for (let x = 0; x < totalW; x++) {
         const wx = Math.min(
           totalW - 1,
-          Math.max(
-            0,
-            Math.round(
-              x + (warpNoiseX[y][x] - 0.5) * warpStrength * baseScale
-            )
-          )
+          Math.max(0, Math.round(x + (warpNoiseX[y][x] - 0.5) * warpStr * baseScale))
         );
         const wy = Math.min(
           totalH - 1,
-          Math.max(
-            0,
-            Math.round(
-              y + (warpNoiseY[y][x] - 0.5) * warpStrength * baseScale
-            )
-          )
+          Math.max(0, Math.round(y + (warpNoiseY[y][x] - 0.5) * warpStr * baseScale))
         );
         warped[y][x] = noise[wy][wx];
       }
@@ -275,15 +262,14 @@ function generateAnimatedFrames(
     noise = warped;
   }
 
-  // --- Layer 2: high-frequency detail noise ---
-  const detailScale = Math.max(totalW, totalH) / (12 + rng() * 18);
-  const detailOctaves = 3 + Math.floor(rng() * 3);
+  // High-frequency detail
+  const detailScale = Math.max(totalW, totalH) / detailDiv;
   const detail: number[][] = Array.from({ length: totalH }, () =>
     new Array(totalW).fill(0)
   );
   let dAmp = 1;
   let dTotal = 0;
-  for (let o = 0; o < detailOctaves; o++) {
+  for (let o = 0; o < detailOct; o++) {
     const scale = detailScale / Math.pow(2, o);
     const layer = valueNoise2D(totalW, totalH, scale, rng);
     for (let y = 0; y < totalH; y++) {
@@ -294,32 +280,35 @@ function generateAnimatedFrames(
     dTotal += dAmp;
     dAmp *= 0.6;
   }
-  for (let y = 0; y < totalH; y++) {
-    for (let x = 0; x < totalW; x++) {
-      detail[y][x] /= dTotal;
-    }
-  }
 
-  // --- Blend ---
   const detailWeight = 0.3 + rng() * 0.15;
   for (let y = 0; y < totalH; y++) {
     for (let x = 0; x < totalW; x++) {
-      noise[y][x] =
-        noise[y][x] * (1 - detailWeight) + detail[y][x] * detailWeight;
+      detail[y][x] /= dTotal;
+      noise[y][x] = noise[y][x] * (1 - detailWeight) + detail[y][x] * detailWeight;
     }
   }
 
-  // --- Sample frames by sliding a window in a circle ---
+  return noise;
+}
+
+function sampleFrames(
+  noise: number[][],
+  width: number,
+  height: number,
+  fillPct: number,
+  numFrames: number,
+  cx: number,
+  cy: number,
+  driftR: number,
+  clockwise: boolean
+): boolean[][][] {
   const frames: boolean[][][] = [];
-  const cx = Math.floor(pad / 2);
-  const cy = Math.floor(pad / 2);
-
   for (let f = 0; f < numFrames; f++) {
-    const angle = (2 * Math.PI * f) / numFrames;
-    const ox = cx + Math.round(Math.cos(angle) * driftRadius);
-    const oy = cy + Math.round(Math.sin(angle) * driftRadius);
+    const angle = (2 * Math.PI * f) / numFrames * (clockwise ? 1 : -1);
+    const ox = cx + Math.round(Math.cos(angle) * driftR);
+    const oy = cy + Math.round(Math.sin(angle) * driftR);
 
-    // Compute per-frame threshold for consistent fill %
     const vals: number[] = [];
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -329,7 +318,7 @@ function generateAnimatedFrames(
     vals.sort((a, b) => a - b);
     const total = width * height;
     const threshold =
-      vals[Math.max(0, total - Math.floor((total * fillPercent) / 100))] ?? 0.5;
+      vals[Math.max(0, total - Math.floor((total * fillPct) / 100))] ?? 0.5;
 
     const grid: boolean[][] = [];
     for (let y = 0; y < height; y++) {
@@ -340,8 +329,62 @@ function generateAnimatedFrames(
     }
     frames.push(grid);
   }
-
   return frames;
+}
+
+function generateAnimatedLayers(
+  width: number,
+  height: number,
+  fillPercent: number,
+  numFrames: number = 10
+): AnimatedLayers {
+  const seed = Math.floor(Math.random() * 999999);
+  const rng = mulberry32(seed);
+
+  // Larger drift for visible motion
+  const driftRadius = Math.max(3, Math.round(Math.max(width, height) * 0.12));
+  const pad = driftRadius * 2 + 2;
+  const totalW = width + pad;
+  const totalH = height + pad;
+  const cx = Math.floor(pad / 2);
+  const cy = Math.floor(pad / 2);
+
+  // Main layer: broad map-like shapes with detail texture
+  const mainBaseDiv = 2 + rng() * 5;
+  const mainOctaves = 2 + Math.floor(rng() * 3);
+  const mainWarp = rng() > 0.3;
+  const mainWarpStr = mainWarp ? 0.5 + rng() * 3 : 0;
+  const mainNoise = buildNoiseField(
+    totalW, totalH, rng,
+    mainBaseDiv, mainOctaves, mainWarp, mainWarpStr,
+    12 + rng() * 18, 3 + Math.floor(rng() * 3)
+  );
+
+  // Overlay layer: finer, more detailed independent pattern
+  const overlayBaseDiv = 4 + rng() * 6;
+  const overlayOctaves = 3 + Math.floor(rng() * 3);
+  const overlayWarp = rng() > 0.4;
+  const overlayWarpStr = overlayWarp ? 0.3 + rng() * 2 : 0;
+  const overlayNoise = buildNoiseField(
+    totalW, totalH, rng,
+    overlayBaseDiv, overlayOctaves, overlayWarp, overlayWarpStr,
+    8 + rng() * 12, 4 + Math.floor(rng() * 2)
+  );
+
+  // Main: clockwise, full drift radius
+  const main = sampleFrames(
+    mainNoise, width, height, fillPercent,
+    numFrames, cx, cy, driftRadius, true
+  );
+
+  // Overlay: counter-clockwise, smaller radius, sparser fill
+  const overlayFill = Math.max(10, Math.round(fillPercent * 0.4));
+  const overlay = sampleFrames(
+    overlayNoise, width, height, overlayFill,
+    numFrames, cx, cy, Math.round(driftRadius * 0.7), false
+  );
+
+  return { main, overlay };
 }
 
 // ==================== SVG MERGING ====================
@@ -429,7 +472,7 @@ function buildSVGString(
 }
 
 function buildAnimatedSVGString(
-  frames: boolean[][][],
+  layers: AnimatedLayers,
   gridW: number,
   gridH: number,
   pixelColor: string,
@@ -437,19 +480,29 @@ function buildAnimatedSVGString(
   duration: number,
   extraAttrs: string = ''
 ): string {
-  const pathDs = frames.map((grid) => {
-    const rects = mergePixelsToRects(grid, gridW, gridH);
-    return rectsToPathD(rects);
-  });
+  const mainDs = layers.main.map((grid) =>
+    rectsToPathD(mergePixelsToRects(grid, gridW, gridH))
+  );
+  const overlayDs = layers.overlay.map((grid) =>
+    rectsToPathD(mergePixelsToRects(grid, gridW, gridH))
+  );
 
-  // Loop back to first frame for seamless repeat
-  const values = [...pathDs, pathDs[0]].join(';\n');
+  const mainValues = [...mainDs, mainDs[0]].join(';\n');
+  const overlayValues = [...overlayDs, overlayDs[0]].join(';\n');
+
+  // Three desynchronized cycles: main drift, overlay drift (faster), overlay breathing
+  const overlayDur = (duration * 0.7).toFixed(2);
+  const breathDur = (duration * 2.2).toFixed(2);
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${gridW} ${gridH}" shape-rendering="crispEdges"${extraAttrs ? ' ' + extraAttrs : ''}>`,
     `<rect width="${gridW}" height="${gridH}" fill="${bgColor}"/>`,
-    `<path d="${pathDs[0]}" fill="${pixelColor}">`,
-    `<animate attributeName="d" calcMode="discrete" dur="${duration}s" repeatCount="indefinite" values="${values}"/>`,
+    `<path d="${mainDs[0]}" fill="${pixelColor}">`,
+    `<animate attributeName="d" calcMode="discrete" dur="${duration}s" repeatCount="indefinite" values="${mainValues}"/>`,
+    `</path>`,
+    `<path d="${overlayDs[0]}" fill="${pixelColor}" opacity="0.25">`,
+    `<animate attributeName="d" calcMode="discrete" dur="${overlayDur}s" repeatCount="indefinite" values="${overlayValues}"/>`,
+    `<animate attributeName="opacity" dur="${breathDur}s" repeatCount="indefinite" values="0.15;0.35;0.15" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>`,
     `</path>`,
     `</svg>`,
   ].join('\n');
@@ -468,7 +521,7 @@ function App() {
   const [animDuration, setAnimDuration] = useState(3);
 
   const [grid, setGrid] = useState<boolean[][] | null>(null);
-  const [frames, setFrames] = useState<boolean[][][] | null>(null);
+  const [layers, setLayers] = useState<AnimatedLayers | null>(null);
   const [displaySVG, setDisplaySVG] = useState('');
   const [rectCount, setRectCount] = useState(0);
   const [filledCount, setFilledCount] = useState(0);
@@ -476,9 +529,9 @@ function App() {
   const handleGenerate = useCallback(() => {
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
-    const newFrames = generateAnimatedFrames(w, h, fillPercent, 8);
-    const firstFrame = newFrames[0];
-    setFrames(newFrames);
+    const newLayers = generateAnimatedLayers(w, h, fillPercent, 10);
+    const firstFrame = newLayers.main[0];
+    setLayers(newLayers);
     setGrid(firstFrame);
 
     // Count filled pixels (from first frame)
@@ -494,7 +547,7 @@ function App() {
     setRectCount(rects.length);
 
     const svg = buildAnimatedSVGString(
-      newFrames,
+      newLayers,
       w,
       h,
       pixelColor,
@@ -508,11 +561,11 @@ function App() {
   // Update display when colors or duration change without regenerating
   const updateDisplay = useCallback(
     (newPixelColor: string, newBgColor: string, newDuration: number) => {
-      if (!frames) return;
+      if (!layers) return;
       const w = Math.max(1, Math.min(512, gridWidth));
       const h = Math.max(1, Math.min(512, gridHeight));
       const svg = buildAnimatedSVGString(
-        frames,
+        layers,
         w,
         h,
         newPixelColor,
@@ -522,7 +575,7 @@ function App() {
       );
       setDisplaySVG(svg);
     },
-    [frames, gridWidth, gridHeight]
+    [layers, gridWidth, gridHeight]
   );
 
   const handlePixelColorChange = (color: string) => {
@@ -541,11 +594,11 @@ function App() {
   };
 
   const handleDownloadSVG = useCallback(() => {
-    if (!frames) return;
+    if (!layers) return;
     const w = Math.max(1, Math.min(512, gridWidth));
     const h = Math.max(1, Math.min(512, gridHeight));
     const svg = buildAnimatedSVGString(
-      frames,
+      layers,
       w,
       h,
       pixelColor,
@@ -561,7 +614,7 @@ function App() {
     a.download = `pixel-art-${w}x${h}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [frames, gridWidth, gridHeight, pixelColor, bgColor, animDuration]);
+  }, [layers, gridWidth, gridHeight, pixelColor, bgColor, animDuration]);
 
   const handleDownloadPNG = useCallback(() => {
     if (!grid) return;
@@ -796,11 +849,11 @@ function App() {
                   %
                 </span>
               </div>
-              {frames && (
+              {layers && (
                 <div className="flex justify-between text-xs">
                   <span className="text-slate-500">Animation</span>
                   <span className="mono text-sky-400">
-                    {frames.length} frames / {animDuration}s
+                    2 layers &times; {layers.main.length}f / {animDuration}s
                   </span>
                 </div>
               )}
@@ -856,7 +909,7 @@ function App() {
           <div className="flex gap-2">
             <button
               onClick={handleDownloadSVG}
-              disabled={!frames}
+              disabled={!layers}
               className="flex-1 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-lg py-2.5 font-semibold text-sm cursor-pointer"
             >
               SVG
