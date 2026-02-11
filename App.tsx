@@ -74,13 +74,11 @@ function generatePattern(
   const seed = Math.floor(Math.random() * 999999);
   const rng = mulberry32(seed);
 
-  // Randomize noise parameters for pattern variety
-  const baseScale = Math.max(width, height) / (2 + rng() * 5);
-  const octaves = 2 + Math.floor(rng() * 3);
-  const useWarp = rng() > 0.3;
-  const warpStrength = useWarp ? 0.5 + rng() * 3 : 0;
+  // High-frequency noise for fine-grained, scattered pixels (not blobs)
+  const baseScale = Math.max(width, height) / (10 + rng() * 16);
+  const octaves = 4 + Math.floor(rng() * 3);
 
-  // Multi-octave fractal noise
+  // Multi-octave fractal noise with strong high-frequency emphasis
   let noise: number[][] = Array.from({ length: height }, () =>
     new Array(width).fill(0)
   );
@@ -96,7 +94,7 @@ function generatePattern(
       }
     }
     totalAmplitude += amplitude;
-    amplitude *= 0.5;
+    amplitude *= 0.75; // slower falloff keeps high-frequency detail strong
   }
 
   // Normalize to 0..1
@@ -106,38 +104,29 @@ function generatePattern(
     }
   }
 
-  // Domain warping for more organic, swirly patterns
-  if (useWarp) {
-    const warpNoiseX = valueNoise2D(width, height, baseScale * 0.7, rng);
-    const warpNoiseY = valueNoise2D(width, height, baseScale * 0.7, rng);
-
-    const warped: number[][] = Array.from({ length: height }, () =>
-      new Array(width).fill(0)
-    );
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const wx = Math.min(
-          width - 1,
-          Math.max(
-            0,
-            Math.round(
-              x + (warpNoiseX[y][x] - 0.5) * warpStrength * baseScale
-            )
-          )
-        );
-        const wy = Math.min(
-          height - 1,
-          Math.max(
-            0,
-            Math.round(
-              y + (warpNoiseY[y][x] - 0.5) * warpStrength * baseScale
-            )
-          )
-        );
-        warped[y][x] = noise[wy][wx];
-      }
+  // Mix in per-pixel white noise to break up coherent blobs
+  const whiteNoiseWeight = 0.35 + rng() * 0.3; // 35-65% white noise
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      noise[y][x] =
+        noise[y][x] * (1 - whiteNoiseWeight) + rng() * whiteNoiseWeight;
     }
-    noise = warped;
+  }
+
+  // Edge bias: boost density near image borders
+  const edgeStrength = 0.18 + rng() * 0.14;
+  const halfW = width / 2;
+  const halfH = height / 2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Normalized distance from nearest edge: 0 at edge, 1 at center
+      const dx = Math.min(x, width - 1 - x) / halfW;
+      const dy = Math.min(y, height - 1 - y) / halfH;
+      const distFromEdge = Math.min(dx, dy);
+      // Smooth falloff curve: strongly boosts pixels within ~20% of the edge
+      const edgeFactor = Math.pow(1 - distFromEdge, 2.5);
+      noise[y][x] += edgeFactor * edgeStrength;
+    }
   }
 
   // Determine threshold to achieve the desired fill percentage
