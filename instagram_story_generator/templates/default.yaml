@@ -1,0 +1,52 @@
+# Default Instagram Story Template
+# ================================
+# Clean, modern design with pencil underlines on key words.
+
+name: default
+width: 1080
+height: 1920
+
+font:
+  family: Arial
+  size: 58
+  bold_size: 66
+  line_spacing: 1.5
+  color: "#FFFFFF"
+  shadow_color: "#00000080"
+  shadow_offset: [3, 3]
+
+underline:
+  style: pencil          # pencil | marker | brush
+  color: "#FF6B35"       # warm orange
+  thickness: 4
+  opacity: 0.85
+  wave_amplitude: 3      # hand-drawn waviness
+  wave_frequency: 0.15
+  marker_height: 16      # only for marker style
+  marker_y_offset: 4
+  passes: 2              # draw passes for thickness
+
+image:
+  position: top           # top | center | bottom | fill
+  max_width_ratio: 0.88
+  max_height_ratio: 0.42
+  border_radius: 24
+  y_offset: 140
+  shadow: true
+  shadow_blur: 15
+  shadow_color: "#00000060"
+
+layout:
+  padding_left: 64
+  padding_right: 64
+  padding_top: 80
+  padding_bottom: 120
+  text_area: bottom       # where text block goes: top | bottom | center
+
+background:
+  overlay_color: "#000000"
+  overlay_opacity: 0.40
+  gradient: true
+  gradient_direction: bottom
+  gradient_start_opacity: 0.0
+  gradient_end_opacity: 0.78

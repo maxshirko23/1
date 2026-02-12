@@ -1,0 +1,52 @@
+# Bold Dark Template
+# ==================
+# High-contrast dark design with thick brush underlines.
+
+name: bold_dark
+width: 1080
+height: 1920
+
+font:
+  family: Arial
+  size: 68
+  bold_size: 78
+  line_spacing: 1.4
+  color: "#FFFFFF"
+  shadow_color: "#000000CC"
+  shadow_offset: [4, 4]
+
+underline:
+  style: brush
+  color: "#E63946"
+  thickness: 8
+  opacity: 0.9
+  wave_amplitude: 5
+  wave_frequency: 0.12
+  marker_height: 20
+  marker_y_offset: 2
+  passes: 3
+
+image:
+  position: top
+  max_width_ratio: 0.85
+  max_height_ratio: 0.38
+  border_radius: 0
+  y_offset: 160
+  shadow: true
+  shadow_blur: 20
+  shadow_color: "#000000AA"
+
+layout:
+  padding_left: 56
+  padding_right: 56
+  padding_top: 100
+  padding_bottom: 140
+  text_area: bottom
+
+background:
+  overlay_color: "#0D1117"
+  overlay_opacity: 0.65
+  gradient: true
+  gradient_direction: bottom
+  gradient_start_opacity: 0.1
+  gradient_end_opacity: 0.9
