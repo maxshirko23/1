@@ -1,0 +1,47 @@
+# Minimal Template
+# ================
+# Light, airy design with marker highlights.
+
+name: minimal
+width: 1080
+height: 1920
+
+font:
+  family: Arial
+  size: 52
+  bold_size: 60
+  line_spacing: 1.6
+  color: "#1A1A2E"
+  shadow_color: null
+  shadow_offset: [0, 0]
+
+underline:
+  style: marker
+  color: "#FFEB3B"
+  thickness: 3
+  opacity: 0.45
+  wave_amplitude: 2
+  wave_frequency: 0.1
+  marker_height: 24
+  marker_y_offset: -4
+  passes: 1
+
+image:
+  position: top
+  max_width_ratio: 0.92
+  max_height_ratio: 0.40
+  border_radius: 16
+  y_offset: 100
+  shadow: false
+
+layout:
+  padding_left: 72
+  padding_right: 72
+  padding_top: 60
+  padding_bottom: 100
+  text_area: bottom
+
+background:
+  overlay_color: "#F5F5F5"
+  overlay_opacity: 0.85
+  gradient: false
