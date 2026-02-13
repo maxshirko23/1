@@ -1,15 +1,19 @@
 """
-Image Renderer for Instagram Story Generator.
+Image Renderer for Instagram Story/Post/Carousel Generator.
 
-Composites the final 1080x1920 story image:
-  1. Places the preview image (with optional rounded corners & shadow)
-  2. Applies background gradient/overlay
-  3. Renders text with hand-drawn pencil/marker/brush underline effects
+Supports two rendering modes:
+  1. Grid-based layout (new) — elements placed on a 12x12 grid with adaptive rules
+  2. Legacy flat layout — backward-compatible simple text + image placement
+
+Composites the final image:
+  - Background (blurred preview, solid color, or gradient)
+  - Image slots (preview image with rounded corners & shadow)
+  - Graphic element slots (logos, icons, decorations)
+  - Text slots (title, body) with hand-drawn underline effects
 """
 
 from __future__ import annotations
 
-import io
 import math
 import random
 from pathlib import Path
@@ -18,6 +22,7 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .config import StoryConfig, FONTS_DIR
+from .grid_layout import GridConfig, LayoutSlot
 
 
 def _parse_color(color_str: str) -> tuple:
@@ -27,266 +32,206 @@ def _parse_color(color_str: str) -> tuple:
         return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), 255)
     elif len(c) == 8:
         return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), int(c[6:8], 16))
-    else:
-        return (255, 255, 255, 255)
+    return (255, 255, 255, 255)
 
 
 def _apply_opacity(color: tuple, opacity: float) -> tuple:
-    """Apply opacity multiplier to an RGBA color."""
     return (color[0], color[1], color[2], int(color[3] * opacity))
 
 
 class StoryRenderer:
     """
-    Renders Instagram Story images based on a StoryConfig template.
+    Renders Instagram content images using either grid or legacy layout.
 
-    The renderer handles:
-      - Background image scaling and placement
-      - Gradient/overlay application
-      - Text layout with word wrapping
-      - Hand-drawn underline effects (pencil, marker, brush)
+    If the config has a GridConfig, the grid-based renderer is used.
+    Otherwise, falls back to the legacy flat layout.
     """
 
     def __init__(self, config: StoryConfig):
         self.config = config
-        self._font: Optional[ImageFont.FreeTypeFont] = None
-        self._font_bold: Optional[ImageFont.FreeTypeFont] = None
+        self._font_cache: dict[str, ImageFont.FreeTypeFont] = {}
 
-    def _get_font(self, bold: bool = False) -> ImageFont.FreeTypeFont:
-        """Load and cache the font."""
-        if bold and self._font_bold:
-            return self._font_bold
-        if not bold and self._font:
-            return self._font
+    # ── Font loading ─────────────────────────────────────────────────
 
-        size = self.config.font.bold_size if bold else self.config.font.size
-        font_family = self.config.font.family
+    def _get_font(
+        self,
+        size: Optional[int] = None,
+        family: Optional[str] = None,
+        weight: Optional[int] = None,
+    ) -> ImageFont.FreeTypeFont:
+        """Load and cache a font by family/size/weight."""
+        size = size or self.config.font.size
+        family = family or self.config.font.google_font or self.config.font.family
+        weight = weight or self.config.font.weight
 
-        # Try to load from fonts directory first
-        for ext in (".ttf", ".otf"):
-            font_path = FONTS_DIR / f"{font_family}{ext}"
-            if font_path.exists():
-                font = ImageFont.truetype(str(font_path), size)
-                if bold:
-                    self._font_bold = font
-                else:
-                    self._font = font
-                return font
+        cache_key = f"{family}_{size}_{weight}"
+        if cache_key in self._font_cache:
+            return self._font_cache[cache_key]
 
-        # Try system font
-        try:
-            font = ImageFont.truetype(font_family, size)
-        except (OSError, IOError):
-            # Try common system font paths
-            common_paths = [
-                f"/usr/share/fonts/truetype/{font_family.lower()}/{font_family}.ttf",
-                f"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                f"/System/Library/Fonts/{font_family}.ttf",
-                f"C:/Windows/Fonts/{font_family.lower()}.ttf",
-            ]
-            font = None
-            for path in common_paths:
-                if Path(path).exists():
-                    font = ImageFont.truetype(path, size)
-                    break
-            if font is None:
-                font = ImageFont.load_default()
-
-        if bold:
-            self._font_bold = font
-        else:
-            self._font = font
+        font = self._load_font(family, size)
+        self._font_cache[cache_key] = font
         return font
+
+    def _load_font(self, family: str, size: int) -> ImageFont.FreeTypeFont:
+        """Try to load a font from various sources."""
+        # Try fonts directory first (includes Google Fonts cache)
+        for ext in (".ttf", ".otf"):
+            font_path = FONTS_DIR / f"{family}{ext}"
+            if font_path.exists():
+                return ImageFont.truetype(str(font_path), size)
+            for pattern in FONTS_DIR.glob(f"{family}*{ext}"):
+                return ImageFont.truetype(str(pattern), size)
+
+        # Try system font by name
+        try:
+            return ImageFont.truetype(family, size)
+        except (OSError, IOError):
+            pass
+
+        # Fallback chain
+        fallbacks = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/System/Library/Fonts/Helvetica.ttf",
+        ]
+        for path in fallbacks:
+            if Path(path).exists():
+                return ImageFont.truetype(path, size)
+
+        return ImageFont.load_default()
+
+    # ── Main render entry point ──────────────────────────────────────
 
     def render(
         self,
         preview_image: Image.Image,
         text_lines: list[dict],
+        title_lines: Optional[list[dict]] = None,
+        graphic_image: Optional[Image.Image] = None,
     ) -> Image.Image:
         """
-        Render the complete story image.
+        Render the complete content image.
 
         Parameters
         ----------
         preview_image : PIL.Image.Image
-            The preview/article image to embed in the story.
+            The preview/article image.
         text_lines : list[dict]
-            Pre-processed text lines. Each dict has:
-              - "text": str — the full line text
-              - "highlights": list[str] — words/phrases in this line to underline
-
-        Returns
-        -------
-        PIL.Image.Image
-            The final 1080x1920 RGBA story image.
+            Body text lines: [{"text": "...", "highlights": [...]}]
+        title_lines : list[dict] | None
+            Title text lines (for grid mode). If None, not rendered.
+        graphic_image : PIL.Image.Image | None
+            Optional graphic element (logo, icon).
         """
+        if self.config.grid:
+            return self._render_grid(
+                preview_image, text_lines, title_lines, graphic_image
+            )
+        return self._render_legacy(preview_image, text_lines)
+
+    # ── Grid-based renderer ──────────────────────────────────────────
+
+    def _render_grid(
+        self,
+        preview_image: Image.Image,
+        body_lines: list[dict],
+        title_lines: Optional[list[dict]],
+        graphic_image: Optional[Image.Image],
+    ) -> Image.Image:
+        """Render using grid-based layout with adaptive rules."""
         cfg = self.config
+        grid = cfg.grid
         canvas = Image.new("RGBA", (cfg.width, cfg.height), (0, 0, 0, 255))
 
-        # Step 1: Place background image (stretched to fill)
+        # Background
         bg = self._prepare_background(preview_image)
         canvas.paste(bg, (0, 0))
-
-        # Step 2: Apply overlay / gradient
         canvas = self._apply_overlay(canvas)
 
-        # Step 3: Place the preview image (with rounded corners, shadow)
-        canvas = self._place_preview(canvas, preview_image)
+        # Apply adaptive rules
+        line_counts = {
+            "body": len(body_lines),
+            "title": len(title_lines) if title_lines else 0,
+        }
+        adjusted_slots = grid.apply_adaptive_rules(line_counts)
 
-        # Step 4: Render text with underline effects
-        canvas = self._render_text(canvas, text_lines)
+        # Sort by z_index for correct render order
+        adjusted_slots.sort(key=lambda s: s.z_index)
+
+        # Render each slot
+        for slot in adjusted_slots:
+            rect = grid.slot_pixel_rect(slot)
+
+            if slot.slot_type == "image":
+                canvas = self._render_image_slot(canvas, slot, rect, preview_image)
+            elif slot.slot_type == "title" and title_lines:
+                canvas = self._render_text_slot(canvas, slot, rect, title_lines)
+            elif slot.slot_type == "body" and body_lines:
+                canvas = self._render_text_slot(canvas, slot, rect, body_lines)
+            elif slot.slot_type == "graphic" and graphic_image:
+                canvas = self._render_graphic_slot(canvas, slot, rect, graphic_image)
 
         return canvas
 
-    def _prepare_background(self, image: Image.Image) -> Image.Image:
-        """Scale and blur the image to use as full background."""
-        cfg = self.config
+    def _render_image_slot(self, canvas, slot, rect, image):
+        """Render an image within a grid slot."""
+        x, y, w, h = rect
         img = image.copy().convert("RGBA")
 
-        # Scale to cover the canvas
-        scale = max(cfg.width / img.width, cfg.height / img.height)
+        scale = min(w / img.width, h / img.height)
         new_w = int(img.width * scale)
         new_h = int(img.height * scale)
         img = img.resize((new_w, new_h), Image.LANCZOS)
 
-        # Center crop
-        left = (new_w - cfg.width) // 2
-        top = (new_h - cfg.height) // 2
-        img = img.crop((left, top, left + cfg.width, top + cfg.height))
+        if slot.border_radius > 0:
+            img = self._round_corners(img, slot.border_radius)
 
-        # Apply blur for background effect
-        img = img.filter(ImageFilter.GaussianBlur(radius=25))
+        ix = x + (w - new_w) // 2
+        iy = y + (h - new_h) // 2
 
-        return img
-
-    def _apply_overlay(self, canvas: Image.Image) -> Image.Image:
-        """Apply color overlay and/or gradient on top of background."""
-        cfg = self.config
-        bg_cfg = cfg.background
-        overlay = Image.new("RGBA", (cfg.width, cfg.height), (0, 0, 0, 0))
-
-        if bg_cfg.gradient:
-            draw = ImageDraw.Draw(overlay)
-            base_color = _parse_color(bg_cfg.overlay_color)
-
-            for y in range(cfg.height):
-                if bg_cfg.gradient_direction == "bottom":
-                    t = y / cfg.height
-                else:  # top
-                    t = 1.0 - y / cfg.height
-
-                opacity = (
-                    bg_cfg.gradient_start_opacity
-                    + (bg_cfg.gradient_end_opacity - bg_cfg.gradient_start_opacity) * t
-                )
-                color = (base_color[0], base_color[1], base_color[2], int(255 * opacity))
-                draw.line([(0, y), (cfg.width, y)], fill=color)
-        else:
-            base_color = _parse_color(bg_cfg.overlay_color)
-            color = _apply_opacity(base_color, bg_cfg.overlay_opacity)
-            overlay = Image.new("RGBA", (cfg.width, cfg.height), color)
-
-        return Image.alpha_composite(canvas, overlay)
-
-    def _place_preview(
-        self, canvas: Image.Image, preview: Image.Image
-    ) -> Image.Image:
-        """Place the preview image on the canvas with optional effects."""
-        cfg = self.config
-        img_cfg = cfg.image
-
-        img = preview.copy().convert("RGBA")
-
-        # Calculate maximum dimensions
-        max_w = int(cfg.width * img_cfg.max_width_ratio)
-        max_h = int(cfg.height * img_cfg.max_height_ratio)
-
-        # Scale to fit within bounds
-        scale = min(max_w / img.width, max_h / img.height)
-        new_w = int(img.width * scale)
-        new_h = int(img.height * scale)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-
-        # Apply rounded corners
-        if img_cfg.border_radius > 0:
-            img = self._round_corners(img, img_cfg.border_radius)
-
-        # Calculate position
-        x = (cfg.width - new_w) // 2
-
-        if img_cfg.position == "top":
-            y = img_cfg.y_offset
-        elif img_cfg.position == "center":
-            y = (cfg.height - new_h) // 2
-        elif img_cfg.position == "bottom":
-            y = cfg.height - new_h - img_cfg.y_offset
-        else:  # fill — already handled by background
-            return canvas
-
-        # Draw shadow
-        if img_cfg.shadow:
-            shadow_color = _parse_color(img_cfg.shadow_color)
+        if self.config.image.shadow:
+            shadow_color = _parse_color(self.config.image.shadow_color)
             shadow = Image.new("RGBA", (new_w + 40, new_h + 40), (0, 0, 0, 0))
-            shadow_draw = ImageDraw.Draw(shadow)
-            shadow_draw.rounded_rectangle(
+            sd = ImageDraw.Draw(shadow)
+            sd.rounded_rectangle(
                 [20, 20, new_w + 20, new_h + 20],
-                radius=img_cfg.border_radius,
-                fill=shadow_color,
+                radius=slot.border_radius, fill=shadow_color,
             )
-            shadow = shadow.filter(
-                ImageFilter.GaussianBlur(radius=img_cfg.shadow_blur)
-            )
-            canvas.paste(shadow, (x - 20, y - 20), shadow)
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=self.config.image.shadow_blur))
+            canvas.paste(shadow, (ix - 20, iy - 20), shadow)
 
-        canvas.paste(img, (x, y), img)
+        canvas.paste(img, (ix, iy), img)
         return canvas
 
-    def _round_corners(self, img: Image.Image, radius: int) -> Image.Image:
-        """Apply rounded corners to an image using an alpha mask."""
-        mask = Image.new("L", img.size, 0)
-        draw = ImageDraw.Draw(mask)
-        draw.rounded_rectangle(
-            [0, 0, img.width, img.height], radius=radius, fill=255
-        )
-        img.putalpha(mask)
-        return img
-
-    def _render_text(
-        self, canvas: Image.Image, text_lines: list[dict]
-    ) -> Image.Image:
-        """Render text lines onto the canvas with underline effects."""
-        cfg = self.config
-        font = self._get_font(bold=False)
+    def _render_text_slot(self, canvas, slot, rect, lines):
+        """Render text within a grid slot with underline effects."""
+        x, y, w, h = rect
         draw = ImageDraw.Draw(canvas)
 
-        text_color = _parse_color(cfg.font.color)
+        font_size = slot.font_size or self.config.font.size
+        font_family = slot.font_family or self.config.font.google_font or self.config.font.family
+        font = self._get_font(size=font_size, family=font_family)
+
+        text_color = _parse_color(slot.font_color or self.config.font.color)
         shadow_color = (
-            _parse_color(cfg.font.shadow_color) if cfg.font.shadow_color else None
+            _parse_color(self.config.font.shadow_color)
+            if self.config.font.shadow_color else None
         )
+        line_spacing = slot.line_spacing or self.config.font.line_spacing
+        line_height = int(font_size * line_spacing)
 
-        # Calculate text area bounds
-        pad_l = cfg.layout.padding_left
-        pad_r = cfg.layout.padding_right
-        max_text_width = cfg.layout.text_max_width or (cfg.width - pad_l - pad_r)
+        total_text_h = line_height * len(lines)
+        if slot.v_align == "bottom":
+            y_cursor = y + h - total_text_h
+        elif slot.v_align == "center":
+            y_cursor = y + (h - total_text_h) // 2
+        else:
+            y_cursor = y
 
-        # Determine Y start based on layout.text_area
-        if cfg.layout.text_y_start is not None:
-            y_cursor = cfg.layout.text_y_start
-        elif cfg.layout.text_area == "bottom":
-            # Estimate total text height
-            line_height = int(cfg.font.size * cfg.font.line_spacing)
-            total_h = line_height * len(text_lines)
-            y_cursor = cfg.height - cfg.layout.padding_bottom - total_h
-        elif cfg.layout.text_area == "center":
-            line_height = int(cfg.font.size * cfg.font.line_spacing)
-            total_h = line_height * len(text_lines)
-            y_cursor = (cfg.height - total_h) // 2
-        else:  # top
-            y_cursor = cfg.layout.padding_top
+        for line_info in lines:
+            if y_cursor + line_height > y + h:
+                break
 
-        line_height = int(cfg.font.size * cfg.font.line_spacing)
-
-        for line_info in text_lines:
             line_text = line_info["text"]
             highlights = line_info.get("highlights", [])
 
@@ -294,327 +239,305 @@ class StoryRenderer:
                 y_cursor += line_height // 2
                 continue
 
-            x = pad_l
+            text_w = font.getbbox(line_text)[2] - font.getbbox(line_text)[0]
+            if slot.h_align == "center":
+                x_start = x + (w - text_w) // 2
+            elif slot.h_align == "right":
+                x_start = x + w - text_w
+            else:
+                x_start = x
 
-            # Render word by word to track positions for underlines
             words = line_text.split()
-            word_positions: list[dict] = []
-
+            word_positions = []
+            wx = x_start
             for word in words:
                 bbox = font.getbbox(word)
-                w_width = bbox[2] - bbox[0]
-
+                ww = bbox[2] - bbox[0]
                 word_positions.append({
-                    "word": word,
-                    "x": x,
-                    "y": y_cursor,
-                    "width": w_width,
-                    "height": cfg.font.size,
+                    "word": word, "x": wx, "y": y_cursor,
+                    "width": ww, "height": font_size,
                 })
-
-                # Draw shadow
                 if shadow_color:
-                    sx, sy = cfg.font.shadow_offset
-                    draw.text(
-                        (x + sx, y_cursor + sy),
-                        word,
-                        font=font,
-                        fill=shadow_color,
-                    )
-
-                # Draw text
-                draw.text((x, y_cursor), word, font=font, fill=text_color)
-
-                # Advance x with space
+                    sx, sy = self.config.font.shadow_offset
+                    draw.text((wx + sx, y_cursor + sy), word, font=font, fill=shadow_color)
+                draw.text((wx, y_cursor), word, font=font, fill=text_color)
                 space_w = font.getbbox(" ")[2]
-                x += w_width + space_w
+                wx += ww + space_w
 
-            # Draw underlines for highlighted words/phrases
-            for highlight in highlights:
-                self._draw_underline_for_phrase(
-                    canvas, word_positions, highlight
-                )
-
+            for hl in highlights:
+                self._draw_underline_for_phrase(canvas, word_positions, hl)
             y_cursor += line_height
 
         return canvas
 
-    def _draw_underline_for_phrase(
-        self,
-        canvas: Image.Image,
-        word_positions: list[dict],
-        phrase: str,
-    ) -> None:
-        """Find the phrase in word positions and draw underline effect."""
-        phrase_words = phrase.lower().split()
-        positions = word_positions
+    def _render_graphic_slot(self, canvas, slot, rect, graphic):
+        """Render a graphic element in a slot."""
+        x, y, w, h = rect
+        img = graphic.copy().convert("RGBA")
 
-        # Find consecutive matching words
-        for i in range(len(positions)):
-            match = True
-            for j, pw in enumerate(phrase_words):
-                if i + j >= len(positions):
-                    match = False
-                    break
-                # Strip punctuation for comparison
-                pos_word = positions[i + j]["word"].lower().strip(".,!?;:\"'()-–—")
-                if pos_word != pw.strip(".,!?;:\"'()-–—"):
-                    match = False
-                    break
+        max_w = int(w * slot.scale)
+        max_h = int(h * slot.scale)
+        scale = min(max_w / img.width, max_h / img.height)
+        new_w = int(img.width * scale)
+        new_h = int(img.height * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
 
-            if match:
-                # Calculate underline span
-                first = positions[i]
-                last = positions[i + len(phrase_words) - 1]
-                x_start = first["x"]
-                x_end = last["x"] + last["width"]
-                y = first["y"] + first["height"]
+        if slot.opacity < 1.0:
+            alpha = img.getchannel("A")
+            alpha = alpha.point(lambda p: int(p * slot.opacity))
+            img.putalpha(alpha)
 
-                self._draw_underline(canvas, x_start, x_end, y)
-                break
+        if slot.border_radius > 0:
+            img = self._round_corners(img, slot.border_radius)
 
-    def _draw_underline(
-        self,
-        canvas: Image.Image,
-        x_start: int,
-        x_end: int,
-        y_baseline: int,
-    ) -> None:
-        """Draw the underline effect based on configured style."""
-        cfg = self.config.underline
-        style = cfg.style
+        ix = x + (w - new_w) // 2
+        iy = y + (h - new_h) // 2
+        canvas.paste(img, (ix, iy), img)
+        return canvas
 
-        if style == "marker":
-            self._draw_marker_underline(canvas, x_start, x_end, y_baseline)
-        elif style == "brush":
-            self._draw_brush_underline(canvas, x_start, x_end, y_baseline)
-        else:  # pencil (default)
-            self._draw_pencil_underline(canvas, x_start, x_end, y_baseline)
+    # ── Legacy renderer (backward compatible) ────────────────────────
 
-    def _draw_pencil_underline(
-        self,
-        canvas: Image.Image,
-        x_start: int,
-        x_end: int,
-        y_baseline: int,
-    ) -> None:
-        """
-        Draw a hand-drawn pencil underline.
+    def _render_legacy(self, preview_image, text_lines):
+        cfg = self.config
+        canvas = Image.new("RGBA", (cfg.width, cfg.height), (0, 0, 0, 255))
+        bg = self._prepare_background(preview_image)
+        canvas.paste(bg, (0, 0))
+        canvas = self._apply_overlay(canvas)
+        canvas = self._place_preview_legacy(canvas, preview_image)
+        canvas = self._render_text_legacy(canvas, text_lines)
+        return canvas
 
-        Creates a slightly wavy line with variable thickness
-        to simulate a real pencil stroke.
-        """
-        cfg = self.config.underline
-        color = _parse_color(cfg.color)
-        color = _apply_opacity(color, cfg.opacity)
+    def _place_preview_legacy(self, canvas, preview):
+        cfg = self.config
+        img_cfg = cfg.image
+        img = preview.copy().convert("RGBA")
+        max_w = int(cfg.width * img_cfg.max_width_ratio)
+        max_h = int(cfg.height * img_cfg.max_height_ratio)
+        scale = min(max_w / img.width, max_h / img.height)
+        new_w = int(img.width * scale)
+        new_h = int(img.height * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        if img_cfg.border_radius > 0:
+            img = self._round_corners(img, img_cfg.border_radius)
+        x = (cfg.width - new_w) // 2
+        if img_cfg.position == "top":
+            y = img_cfg.y_offset
+        elif img_cfg.position == "center":
+            y = (cfg.height - new_h) // 2
+        elif img_cfg.position == "bottom":
+            y = cfg.height - new_h - img_cfg.y_offset
+        else:
+            return canvas
+        if img_cfg.shadow:
+            sc = _parse_color(img_cfg.shadow_color)
+            shadow = Image.new("RGBA", (new_w + 40, new_h + 40), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(shadow)
+            sd.rounded_rectangle([20, 20, new_w + 20, new_h + 20], radius=img_cfg.border_radius, fill=sc)
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=img_cfg.shadow_blur))
+            canvas.paste(shadow, (x - 20, y - 20), shadow)
+        canvas.paste(img, (x, y), img)
+        return canvas
 
-        # Create an overlay for the underline
-        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        y_base = y_baseline + 6  # slightly below text baseline
-
-        for p in range(cfg.passes):
-            # Slight vertical offset per pass for thickness effect
-            y_off = p * 2 - (cfg.passes - 1)
-            points = []
-
-            # Seed randomness per underline for consistency
-            rng = random.Random(hash((x_start, y_baseline, p)))
-
-            x = x_start - 4  # extend slightly before the word
-            end_x = x_end + 4  # extend slightly after
-            step = 3
-
-            while x <= end_x:
-                # Wavy displacement
-                wave = math.sin(x * cfg.wave_frequency) * cfg.wave_amplitude
-                # Random hand jitter
-                jitter = rng.uniform(-1.2, 1.2)
-                y = y_base + wave + jitter + y_off
-                points.append((x, y))
-                x += step
-
-            # Draw the line segments
-            if len(points) >= 2:
-                for i in range(len(points) - 1):
-                    draw.line(
-                        [points[i], points[i + 1]],
-                        fill=color,
-                        width=cfg.thickness,
-                    )
-
-        canvas_result = Image.alpha_composite(canvas, overlay)
-        canvas.paste(canvas_result)
-
-    def _draw_marker_underline(
-        self,
-        canvas: Image.Image,
-        x_start: int,
-        x_end: int,
-        y_baseline: int,
-    ) -> None:
-        """
-        Draw a translucent marker-style highlight.
-
-        Creates a semi-transparent colored rectangle behind/below text,
-        like a real highlighter pen.
-        """
-        cfg = self.config.underline
-        color = _parse_color(cfg.color)
-        color = _apply_opacity(color, cfg.opacity)
-
-        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        y_top = y_baseline - self.config.font.size + cfg.marker_y_offset
-        y_bottom = y_top + self.config.font.size + cfg.marker_height
-
-        # Slightly irregular edges for natural look
-        rng = random.Random(hash((x_start, y_baseline)))
-        x1 = x_start - rng.randint(2, 6)
-        x2 = x_end + rng.randint(2, 6)
-        y1_jitter = rng.randint(-2, 2)
-        y2_jitter = rng.randint(-2, 2)
-
-        draw.rounded_rectangle(
-            [x1, y_top + y1_jitter, x2, y_bottom + y2_jitter],
-            radius=4,
-            fill=color,
-        )
-
-        canvas_result = Image.alpha_composite(canvas, overlay)
-        canvas.paste(canvas_result)
-
-    def _draw_brush_underline(
-        self,
-        canvas: Image.Image,
-        x_start: int,
-        x_end: int,
-        y_baseline: int,
-    ) -> None:
-        """
-        Draw a thick brush-stroke underline.
-
-        Creates a bold, slightly irregular stroke that looks like
-        a paint brush was dragged under the text.
-        """
-        cfg = self.config.underline
-        color = _parse_color(cfg.color)
-        color = _apply_opacity(color, cfg.opacity)
-
-        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        y_base = y_baseline + 4
-        rng = random.Random(hash((x_start, y_baseline)))
-
-        for p in range(cfg.passes):
-            y_off = (p - cfg.passes // 2) * 3
-            points = []
-            x = x_start - 8
-            end_x = x_end + 8
-            step = 4
-
-            while x <= end_x:
-                wave = math.sin(x * cfg.wave_frequency * 0.7) * (cfg.wave_amplitude * 1.5)
-                jitter = rng.uniform(-2.0, 2.0)
-                y = y_base + wave + jitter + y_off
-                points.append((x, y))
-                x += step
-
-            if len(points) >= 2:
-                # Draw with varying thickness
-                for i in range(len(points) - 1):
-                    # Thicker in the middle, thinner at edges
-                    t = i / max(len(points) - 1, 1)
-                    thickness_factor = 1.0 - 0.4 * abs(t - 0.5) * 2
-                    width = max(2, int(cfg.thickness * thickness_factor))
-
-                    draw.line(
-                        [points[i], points[i + 1]],
-                        fill=color,
-                        width=width,
-                    )
-
-        canvas_result = Image.alpha_composite(canvas, overlay)
-        canvas.paste(canvas_result)
-
-    def wrap_text(
-        self,
-        text: str,
-        highlights: list[str],
-    ) -> list[dict]:
-        """
-        Word-wrap text to fit within the configured text area width.
-
-        Returns a list of line dicts: {"text": "...", "highlights": ["..."]}
-        Each line includes which highlight phrases (if any) appear on it.
-        """
+    def _render_text_legacy(self, canvas, text_lines):
         cfg = self.config
         font = self._get_font()
-        max_width = cfg.layout.text_max_width or (
-            cfg.width - cfg.layout.padding_left - cfg.layout.padding_right
+        draw = ImageDraw.Draw(canvas)
+        text_color = _parse_color(cfg.font.color)
+        shadow_color = _parse_color(cfg.font.shadow_color) if cfg.font.shadow_color else None
+        pad_l = cfg.layout.padding_left
+        line_height = int(cfg.font.size * cfg.font.line_spacing)
+        if cfg.layout.text_y_start is not None:
+            y_cursor = cfg.layout.text_y_start
+        elif cfg.layout.text_area == "bottom":
+            y_cursor = cfg.height - cfg.layout.padding_bottom - line_height * len(text_lines)
+        elif cfg.layout.text_area == "center":
+            y_cursor = (cfg.height - line_height * len(text_lines)) // 2
+        else:
+            y_cursor = cfg.layout.padding_top
+        for line_info in text_lines:
+            line_text = line_info["text"]
+            highlights = line_info.get("highlights", [])
+            if not line_text.strip():
+                y_cursor += line_height // 2
+                continue
+            x = pad_l
+            words = line_text.split()
+            word_positions = []
+            for word in words:
+                bbox = font.getbbox(word)
+                ww = bbox[2] - bbox[0]
+                word_positions.append({"word": word, "x": x, "y": y_cursor, "width": ww, "height": cfg.font.size})
+                if shadow_color:
+                    sx, sy = cfg.font.shadow_offset
+                    draw.text((x + sx, y_cursor + sy), word, font=font, fill=shadow_color)
+                draw.text((x, y_cursor), word, font=font, fill=text_color)
+                x += ww + font.getbbox(" ")[2]
+            for hl in highlights:
+                self._draw_underline_for_phrase(canvas, word_positions, hl)
+            y_cursor += line_height
+        return canvas
+
+    # ── Shared helpers ───────────────────────────────────────────────
+
+    def _prepare_background(self, image):
+        cfg = self.config
+        img = image.copy().convert("RGBA")
+        scale = max(cfg.width / img.width, cfg.height / img.height)
+        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+        left = (img.width - cfg.width) // 2
+        top = (img.height - cfg.height) // 2
+        img = img.crop((left, top, left + cfg.width, top + cfg.height))
+        return img.filter(ImageFilter.GaussianBlur(radius=25))
+
+    def _apply_overlay(self, canvas):
+        cfg = self.config
+        bg_cfg = cfg.background
+        overlay = Image.new("RGBA", (cfg.width, cfg.height), (0, 0, 0, 0))
+        if bg_cfg.gradient:
+            draw = ImageDraw.Draw(overlay)
+            base = _parse_color(bg_cfg.overlay_color)
+            for y in range(cfg.height):
+                t = y / cfg.height if bg_cfg.gradient_direction == "bottom" else 1.0 - y / cfg.height
+                op = bg_cfg.gradient_start_opacity + (bg_cfg.gradient_end_opacity - bg_cfg.gradient_start_opacity) * t
+                draw.line([(0, y), (cfg.width, y)], fill=(base[0], base[1], base[2], int(255 * op)))
+        else:
+            base = _parse_color(bg_cfg.overlay_color)
+            overlay = Image.new("RGBA", (cfg.width, cfg.height), _apply_opacity(base, bg_cfg.overlay_opacity))
+        return Image.alpha_composite(canvas, overlay)
+
+    def _round_corners(self, img, radius):
+        mask = Image.new("L", img.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, img.width, img.height], radius=radius, fill=255)
+        img.putalpha(mask)
+        return img
+
+    # ── Underline effects ────────────────────────────────────────────
+
+    def _draw_underline_for_phrase(self, canvas, word_positions, phrase):
+        phrase_words = phrase.lower().split()
+        for i in range(len(word_positions)):
+            match = True
+            for j, pw in enumerate(phrase_words):
+                if i + j >= len(word_positions):
+                    match = False
+                    break
+                if word_positions[i + j]["word"].lower().strip(".,!?;:\"'()-–—") != pw.strip(".,!?;:\"'()-–—"):
+                    match = False
+                    break
+            if match:
+                first = word_positions[i]
+                last = word_positions[i + len(phrase_words) - 1]
+                self._draw_underline(canvas, first["x"], last["x"] + last["width"], first["y"] + first["height"])
+                break
+
+    def _draw_underline(self, canvas, x_start, x_end, y_baseline):
+        style = self.config.underline.style
+        if style == "marker":
+            self._draw_marker(canvas, x_start, x_end, y_baseline)
+        elif style == "brush":
+            self._draw_brush(canvas, x_start, x_end, y_baseline)
+        else:
+            self._draw_pencil(canvas, x_start, x_end, y_baseline)
+
+    def _draw_pencil(self, canvas, x_start, x_end, y_baseline):
+        cfg = self.config.underline
+        color = _apply_opacity(_parse_color(cfg.color), cfg.opacity)
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        y_base = y_baseline + 6
+        for p in range(cfg.passes):
+            y_off = p * 2 - (cfg.passes - 1)
+            rng = random.Random(hash((x_start, y_baseline, p)))
+            pts = []
+            x = x_start - 4
+            while x <= x_end + 4:
+                pts.append((x, y_base + math.sin(x * cfg.wave_frequency) * cfg.wave_amplitude + rng.uniform(-1.2, 1.2) + y_off))
+                x += 3
+            for i in range(len(pts) - 1):
+                draw.line([pts[i], pts[i + 1]], fill=color, width=cfg.thickness)
+        canvas.paste(Image.alpha_composite(canvas, overlay))
+
+    def _draw_marker(self, canvas, x_start, x_end, y_baseline):
+        cfg = self.config.underline
+        color = _apply_opacity(_parse_color(cfg.color), cfg.opacity)
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        y_top = y_baseline - self.config.font.size + cfg.marker_y_offset
+        y_bottom = y_top + self.config.font.size + cfg.marker_height
+        rng = random.Random(hash((x_start, y_baseline)))
+        draw.rounded_rectangle(
+            [x_start - rng.randint(2, 6), y_top + rng.randint(-2, 2),
+             x_end + rng.randint(2, 6), y_bottom + rng.randint(-2, 2)],
+            radius=4, fill=color,
         )
+        canvas.paste(Image.alpha_composite(canvas, overlay))
+
+    def _draw_brush(self, canvas, x_start, x_end, y_baseline):
+        cfg = self.config.underline
+        color = _apply_opacity(_parse_color(cfg.color), cfg.opacity)
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        y_base = y_baseline + 4
+        rng = random.Random(hash((x_start, y_baseline)))
+        for p in range(cfg.passes):
+            y_off = (p - cfg.passes // 2) * 3
+            pts = []
+            x = x_start - 8
+            while x <= x_end + 8:
+                pts.append((x, y_base + math.sin(x * cfg.wave_frequency * 0.7) * cfg.wave_amplitude * 1.5 + rng.uniform(-2.0, 2.0) + y_off))
+                x += 4
+            for i in range(len(pts) - 1):
+                t = i / max(len(pts) - 1, 1)
+                w = max(2, int(cfg.thickness * (1.0 - 0.4 * abs(t - 0.5) * 2)))
+                draw.line([pts[i], pts[i + 1]], fill=color, width=w)
+        canvas.paste(Image.alpha_composite(canvas, overlay))
+
+    # ── Text wrapping ────────────────────────────────────────────────
+
+    def wrap_text(self, text, highlights, max_width=None, font_size=None, font_family=None):
+        """Word-wrap text to fit within a pixel width."""
+        font = self._get_font(size=font_size, family=font_family)
+        cfg = self.config
+        if max_width is None:
+            if cfg.grid:
+                body = cfg.grid.get_slot("body")
+                if body:
+                    _, _, w, _ = cfg.grid.slot_pixel_rect(body)
+                    max_width = w
+            if max_width is None:
+                max_width = cfg.layout.text_max_width or (cfg.width - cfg.layout.padding_left - cfg.layout.padding_right)
 
         words = text.split()
-        lines: list[dict] = []
-        current_line_words: list[str] = []
-        current_width = 0
+        lines, cur_words, cur_w = [], [], 0
         space_w = font.getbbox(" ")[2]
-
         for word in words:
-            word_w = font.getbbox(word)[2] - font.getbbox(word)[0]
-            test_width = current_width + word_w + (space_w if current_line_words else 0)
-
-            if test_width > max_width and current_line_words:
-                line_text = " ".join(current_line_words)
-                line_highlights = self._find_highlights_in_line(
-                    line_text, highlights
-                )
-                lines.append({"text": line_text, "highlights": line_highlights})
-                current_line_words = [word]
-                current_width = word_w
+            ww = font.getbbox(word)[2] - font.getbbox(word)[0]
+            test_w = cur_w + ww + (space_w if cur_words else 0)
+            if test_w > max_width and cur_words:
+                lt = " ".join(cur_words)
+                lines.append({"text": lt, "highlights": self._find_highlights(lt, highlights)})
+                cur_words, cur_w = [word], ww
             else:
-                current_line_words.append(word)
-                current_width = test_width
-
-        # Last line
-        if current_line_words:
-            line_text = " ".join(current_line_words)
-            line_highlights = self._find_highlights_in_line(
-                line_text, highlights
-            )
-            lines.append({"text": line_text, "highlights": line_highlights})
-
+                cur_words.append(word)
+                cur_w = test_w
+        if cur_words:
+            lt = " ".join(cur_words)
+            lines.append({"text": lt, "highlights": self._find_highlights(lt, highlights)})
         return lines
 
-    def _find_highlights_in_line(
-        self, line_text: str, highlights: list[str]
-    ) -> list[str]:
-        """Determine which highlight phrases appear in this line."""
+    def _find_highlights(self, line_text, highlights):
         result = []
         line_lower = line_text.lower()
         for h in highlights:
-            # Check if all words of the phrase are in this line (in order)
-            h_words = h.lower().split()
-            # Simple substring check for single words
-            if len(h_words) == 1:
-                # Check each word in the line
+            hw = h.lower().split()
+            if len(hw) == 1:
                 for lw in line_lower.split():
-                    clean_lw = lw.strip(".,!?;:\"'()-–—")
-                    if clean_lw == h_words[0].strip(".,!?;:\"'()-–—"):
+                    if lw.strip(".,!?;:\"'()-–—") == hw[0].strip(".,!?;:\"'()-–—"):
                         result.append(h)
                         break
             else:
-                # Multi-word phrase: check if it appears as substring
-                h_clean = " ".join(
-                    w.strip(".,!?;:\"'()-–—") for w in h_words
-                )
-                line_clean_words = [
-                    w.strip(".,!?;:\"'()-–—") for w in line_lower.split()
-                ]
-                line_clean = " ".join(line_clean_words)
-                if h_clean in line_clean:
+                hc = " ".join(w.strip(".,!?;:\"'()-–—") for w in hw)
+                lc = " ".join(w.strip(".,!?;:\"'()-–—") for w in line_lower.split())
+                if hc in lc:
                     result.append(h)
         return result
