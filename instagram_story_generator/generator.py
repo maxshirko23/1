@@ -27,6 +27,15 @@ Usage:
     gen.generate_to_file(
         text="...", image_path="preview.jpg", output_path="story.png"
     )
+
+    # Use TemplateLibrary for random/parameterized template selection:
+    from instagram_story_generator import StoryGenerator, TemplateLibrary
+
+    library = TemplateLibrary()
+    library.add_from_image("reference.png", name="my_brand")
+
+    gen = StoryGenerator.from_library(library, mood="bold", tags=["dark"])
+    gen = StoryGenerator.from_library_random(library)
 """
 
 from __future__ import annotations
@@ -84,10 +93,117 @@ class StoryGenerator:
         )
         self._renderer = StoryRenderer(self._config)
 
+    # ── Library-based constructors ───────────────────────────────────
+
+    @classmethod
+    def from_library(
+        cls,
+        library,
+        mood: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        is_dark: Optional[bool] = None,
+        warmth_range: Optional[tuple[float, float]] = None,
+        prefer_least_used: bool = False,
+        max_keywords: int = 5,
+        custom_stop_words: Optional[set[str]] = None,
+    ) -> StoryGenerator:
+        """
+        Create a StoryGenerator using the best matching template
+        from a TemplateLibrary.
+
+        Parameters
+        ----------
+        library : TemplateLibrary
+            The template library to select from.
+        mood : str | None
+            Preferred mood ("bold", "calm", "energetic", etc.).
+        tags : list[str] | None
+            Preferred tags (["dark", "warm"], etc.).
+        is_dark : bool | None
+            Prefer dark or light theme.
+        warmth_range : tuple[float, float] | None
+            Preferred color warmth range (-1.0 to 1.0).
+        prefer_least_used : bool
+            Prefer templates that have been used less.
+        max_keywords : int
+            Maximum key phrases to highlight.
+        custom_stop_words : set[str] | None
+            Additional stop words.
+
+        Raises
+        ------
+        ValueError
+            If no template matches the given parameters.
+        """
+        config = library.select(
+            mood=mood,
+            tags=tags,
+            is_dark=is_dark,
+            warmth_range=warmth_range,
+            prefer_least_used=prefer_least_used,
+        )
+        if config is None:
+            raise ValueError(
+                f"No template matches: mood={mood}, tags={tags}, "
+                f"is_dark={is_dark}, warmth_range={warmth_range}. "
+                f"Library has {library.size} templates."
+            )
+        return cls(
+            config=config,
+            max_keywords=max_keywords,
+            custom_stop_words=custom_stop_words,
+        )
+
+    @classmethod
+    def from_library_random(
+        cls,
+        library,
+        tags: Optional[list[str]] = None,
+        mood: Optional[str] = None,
+        is_dark: Optional[bool] = None,
+        exclude: Optional[list[str]] = None,
+        max_keywords: int = 5,
+        custom_stop_words: Optional[set[str]] = None,
+    ) -> StoryGenerator:
+        """
+        Create a StoryGenerator with a random template from the library.
+
+        Parameters
+        ----------
+        library : TemplateLibrary
+            The template library to pick from.
+        tags / mood / is_dark :
+            Optional filters — only pick from matching templates.
+        exclude : list[str] | None
+            Template names to exclude (e.g., recently used).
+
+        Raises
+        ------
+        ValueError
+            If no template matches the filters.
+        """
+        config = library.random(
+            tags=tags, mood=mood, is_dark=is_dark, exclude=exclude
+        )
+        if config is None:
+            raise ValueError(
+                f"No template matches filters in library "
+                f"({library.size} templates total)."
+            )
+        return cls(
+            config=config,
+            max_keywords=max_keywords,
+            custom_stop_words=custom_stop_words,
+        )
+
+    # ── Properties ───────────────────────────────────────────────────
+
     @property
     def config(self) -> StoryConfig:
         """Current configuration."""
         return self._config
+
+    # ── Generation methods ───────────────────────────────────────────
 
     def generate(
         self,
