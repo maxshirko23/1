@@ -8,6 +8,7 @@ import { Philosophy } from './components/Philosophy';
 import { Insights } from './components/Insights';
 import { Contact } from './components/Contact';
 import { Footer } from './components/Footer';
+import { AudioPlayer } from './components/AudioPlayer';
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
       </main>
 
       <Footer />
+      <AudioPlayer />
     </div>
   );
 }
